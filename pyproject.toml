@@ -1,7 +1,7 @@
 [project]
-name = "non-relational-dbs"
+name = "non-relational-dbs-labs"
 version = "0.1.0"
-description = "Non-relational DBs"
+description = "non-relational-dbs-labs"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

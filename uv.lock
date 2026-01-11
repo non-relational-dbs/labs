@@ -1395,7 +1395,7 @@ wheels = [
 ]
 
 [[package]]
-name = "non-relational-dbs"
+name = "non-relational-dbs-labs"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
