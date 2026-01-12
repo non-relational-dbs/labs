@@ -1,5 +1,5 @@
 # Use the official Spark image as the base
-FROM apache/spark:python3 
+FROM apache/spark:3.5.7-scala2.12-java17-python3-ubuntu
 
 # Switch to root to install software
 USER root
@@ -12,7 +12,7 @@ EXPOSE 8888
 
 # Install Python dependencies
 RUN apt-get update && apt-get install -y python3-venv
-RUN python3 -m pip install --no-cache-dir pyspark jupyterlab pandas pyarrow
+RUN python3 -m pip install --no-cache-dir pyspark==3.5.7 delta-spark==3.2.0 jupyterlab pandas pyarrow
 
 # Set the default command to launch Jupyter Lab
 CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--NotebookApp.token=$$JUPYTER_LAB_TOKEN"]

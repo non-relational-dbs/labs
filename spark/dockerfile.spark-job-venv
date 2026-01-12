@@ -1,5 +1,5 @@
 # Use the previously generated spark-jupyter image as the base
-FROM spark-jupyter:python3
+FROM spark-jupyter:3.5.7-scala2.12-java17-python3-ubuntu
 
 # Create virtual env for spark jobs
 RUN mkdir -p /opt/spark/venv-build && \
