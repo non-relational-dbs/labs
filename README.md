@@ -104,6 +104,20 @@ flowchart LR
 
 Install everything below **once**, before you clone and run the labs. Pick your operating system and follow each block. On Linux, commands are given for **Ubuntu** (`apt`) and **Fedora** (`dnf`) — the two distros most students use.
 
+### 0. Homebrew (optional — macOS & Linux)
+
+[Homebrew](https://brew.sh/) is a package manager for macOS (and Linux) that installs many of the tools below with one command. Several steps below list a `brew` alternative.
+
+Install it with:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+After install, run the `eval` line Homebrew prints at the end (it adds `brew` to your `PATH`; on Apple Silicon it lives in `/opt/homebrew`, on Intel in `/usr/local`).
+
+> On **Linux**, Homebrew is available too, but the `apt`/`dnf` commands shown below are the recommended route — use `brew` only if you already have it.
+
 ### 1. Docker
 
 > Runs every cluster in this course. The Docker Desktop / Docker Engine license is free for personal use and education.
@@ -132,6 +146,12 @@ Install everything below **once**, before you clone and run the labs. Pick your 
 <details>
 <summary><b>macOS</b> (Apple Silicon or Intel)</summary>
 
+**Option A — Homebrew (one command):**
+```bash
+brew install --cask docker-desktop
+```
+
+**Option B — manual download:**
 1. Download Docker Desktop:
    - [Docker Desktop for Mac — Apple Silicon](https://desktop.docker.com/mac/main/arm64/Docker.dmg)
    - [Docker Desktop for Mac — Intel](https://desktop.docker.com/mac/main/amd64/Docker.dmg)
@@ -248,6 +268,15 @@ git --version   # e.g. git version 2.55.0
 Download VS Code from [code.visualstudio.com/download](https://code.visualstudio.com/download) (Windows/macOS installers; `.deb` / `.rpm` / `.tar.gz` for Linux).
 
 <details>
+<summary><b>macOS</b> (Homebrew)</summary>
+
+```bash
+brew install --cask visual-studio-code
+```
+
+</details>
+
+<details>
 <summary><b>Linux — Ubuntu</b> (apt)</summary>
 
 ```bash
@@ -341,7 +370,10 @@ The clusters resolve hostnames on the course VPN (`mavasbel.vpn.itam.mx`). **Wit
 <details>
 <summary><b>macOS</b></summary>
 
-- Install [WireGuard from the Mac App Store](https://apps.apple.com/us/app/wireguard/id1451685025).
+- Install [WireGuard from the Mac App Store](https://apps.apple.com/us/app/wireguard/id1451685025) *(GUI app)*, **or**
+  ```bash
+  brew install wireguard-tools   # command-line (wg / wg-quick)
+  ```
 
 </details>
 
