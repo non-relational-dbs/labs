@@ -19,9 +19,10 @@ Spin up **Cassandra · MongoDB · Hadoop · Hive · Spark · OpenSearch · Redis
 
 1. [What is this?](#what-is-this)
 2. [Architecture at a glance](#architecture-at-a-glance)
-3. [Prerequisites](#prerequisites)
-4. [Quickstart](#quickstart)
-5. [Modules](#modules)
+3. [Environment setup](#environment-setup)
+4. [Prerequisites](#prerequisites)
+5. [Quickstart](#quickstart)
+6. [Modules](#modules)
    - [Cassandra](#cassandra)
    - [MongoDB](#mongodb)
    - [Hadoop](#hadoop)
@@ -30,11 +31,11 @@ Spin up **Cassandra · MongoDB · Hadoop · Hive · Spark · OpenSearch · Redis
    - [OpenSearch](#opensearch)
    - [Redis](#redis)
    - [Neo4j](#neo4j)
-6. [The VPN model](#the-vpn-model)
-7. [Cluster lifecycle & cleanup](#cluster-lifecycle--cleanup)
-8. [Security notes](#security-notes)
-9. [Troubleshooting](#troubleshooting)
-10. [Conventions & contributing](#conventions--contributing)
+7. [The VPN model](#the-vpn-model)
+8. [Cluster lifecycle & cleanup](#cluster-lifecycle--cleanup)
+9. [Security notes](#security-notes)
+10. [Troubleshooting](#troubleshooting)
+11. [Conventions & contributing](#conventions--contributing)
 
 ---
 
@@ -99,15 +100,285 @@ flowchart LR
 
 ---
 
+## Environment setup
+
+Install everything below **once**, before you clone and run the labs. Pick your operating system and follow each block. On Linux, commands are given for **Ubuntu** (`apt`) and **Fedora** (`dnf`) — the two distros most students use.
+
+### 1. Docker
+
+> Runs every cluster in this course. The Docker Desktop / Docker Engine license is free for personal use and education.
+
+<details>
+<summary><b>Windows</b> (10/11, 64-bit)</summary>
+
+1. Enable WSL 2 first. Open **PowerShell as administrator** and run:
+   ```powershell
+   wsl --install
+   ```
+   Reboot when prompted.
+2. Download Docker Desktop:
+   - [Docker Desktop for Windows (x64/AMD64)](https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe)
+   - [Docker Desktop for Windows (ARM64)](https://desktop.docker.com/win/main/arm64/Docker%20Desktop%20Installer.exe)
+3. Run the installer. On the configuration step, keep the **WSL 2** backend (default).
+4. Start **Docker Desktop** and finish the first-run wizard.
+5. Verify:
+   ```powershell
+   docker --version
+   docker compose version
+   ```
+
+</details>
+
+<details>
+<summary><b>macOS</b> (Apple Silicon or Intel)</summary>
+
+1. Download Docker Desktop:
+   - [Docker Desktop for Mac — Apple Silicon](https://desktop.docker.com/mac/main/arm64/Docker.dmg)
+   - [Docker Desktop for Mac — Intel](https://desktop.docker.com/mac/main/amd64/Docker.dmg)
+2. Open the `.dmg` and drag **Docker** into **Applications**.
+3. Launch `Docker.app`, accept the license, and finish setup.
+4. Verify:
+   ```bash
+   docker --version
+   docker compose version
+   ```
+
+</details>
+
+<details>
+<summary><b>Linux — Ubuntu</b> (native Docker Engine, recommended)</summary>
+
+Install Docker Engine + the Compose plugin from Docker's official `apt` repository:
+
+```bash
+sudo apt update && sudo apt install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<'EOF'
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+newgrp docker
+```
+
+> Prefer the GUI? [Docker Desktop for Linux (`.deb`)](https://desktop.docker.com/linux/main/amd64/docker-desktop-amd64.deb) is the desktop alternative; the native engine above is lighter and fully supports `docker compose`.
+
+</details>
+
+<details>
+<summary><b>Linux — Fedora</b> (native Docker Engine, recommended)</summary>
+
+Install Docker Engine + the Compose plugin from Docker's official `dnf` repository:
+
+```bash
+sudo dnf -y install dnf-plugins-core
+sudo dnf config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+newgrp docker
+```
+
+> Note: Docker supports the current Fedora releases (44 / 43) and the current + previous Ubuntu LTS. Prefer the GUI? [Docker Desktop for Linux (`.rpm`)](https://desktop.docker.com/linux/main/amd64/docker-desktop-x86_64.rpm) is the desktop alternative.
+
+</details>
+
+Verify on any OS:
+
+```bash
+docker --version        # e.g. Docker version 29.x
+docker compose version  # e.g. Docker Compose version v2.x
+```
+
+### 2. Git
+
+<details>
+<summary><b>Windows</b></summary>
+
+- Download the [Git for Windows installer (2.55.0)](https://git-scm.com/download/win) and run it (defaults are fine), **or**
+  ```powershell
+  winget install --id Git.Git --source winget
+  ```
+
+</details>
+
+<details>
+<summary><b>macOS</b></summary>
+
+```bash
+xcode-select --install   # Apple Command Line Tools (simplest)
+# or, if you use Homebrew:
+brew install git
+```
+
+</details>
+
+<details>
+<summary><b>Linux</b></summary>
+
+```bash
+# Ubuntu / Debian
+sudo apt install git
+
+# Fedora / RHEL
+sudo dnf install git
+```
+
+</details>
+
+Verify on any OS:
+
+```bash
+git --version   # e.g. git version 2.55.0
+```
+
+### 3. VS Code + extensions
+
+Download VS Code from [code.visualstudio.com/download](https://code.visualstudio.com/download) (Windows/macOS installers; `.deb` / `.rpm` / `.tar.gz` for Linux).
+
+<details>
+<summary><b>Linux — Ubuntu</b> (apt)</summary>
+
+```bash
+# Option A — quick install from the downloaded .deb
+sudo apt install ./code_*.deb
+
+# Option B — Microsoft's apt repo (auto-updates)
+sudo apt-get install wget gpg
+wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > packages.microsoft.gpg
+sudo install -D -o root -g root -m 644 packages.microsoft.gpg /etc/apt/keyrings/packages.microsoft.gpg
+echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" | sudo tee /etc/apt/sources.list.d/vscode.list > /dev/null
+sudo apt update && sudo apt install code
+```
+
+</details>
+
+<details>
+<summary><b>Linux — Fedora</b> (dnf)</summary>
+
+```bash
+sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
+sudo tee /etc/yum.repos.d/vscode.repo > /dev/null <<'EOF'
+[code]
+name=Visual Studio Code
+baseurl=https://packages.microsoft.com/yumrepos/vscode
+enabled=1
+autorefresh=1
+type=rpm-md
+gpgcheck=1
+gpgkey=https://packages.microsoft.com/keys/microsoft.asc
+EOF
+sudo dnf check-update && sudo dnf install code
+```
+
+</details>
+
+Then install these extensions (open the Extensions view with `Ctrl+Shift+X`, or click the links):
+
+| Extension | ID / Marketplace link | Why |
+|---|---|---|
+| **Python** | `ms-python.python` — [marketplace](https://marketplace.visualstudio.com/items?itemName=ms-python.python) | language support, interpreter selection |
+| **Jupyter** | `ms-toolsai.jupyter` — [marketplace](https://marketplace.visualstudio.com/items?itemName=ms-toolsai.jupyter) | run `.ipynb` notebooks |
+| **Docker** | `ms-azuretools.vscode-docker` — [marketplace](https://marketplace.visualstudio.com/items?itemName=ms-azuretools.vscode-docker) | inspect/stop the course containers |
+| **Dev Containers** *(optional)* | `ms-vscode-remote.remote-containers` — [marketplace](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) | develop inside containers |
+
+> The Jupyter extension auto-installs its own helpers (renderers, keymap, cell tags). You still need **both** the Python and Jupyter extensions.
+
+### 4. uv (Python 3.13 + dependencies)
+
+`uv` is the package manager this repo uses (it replaces `pip` + `venv` and installs Python 3.13 for you).
+
+<details>
+<summary><b>Windows</b> (PowerShell)</summary>
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+# or via winget:
+winget install --id=astral-sh.uv -e
+```
+
+</details>
+
+<details>
+<summary><b>macOS / Linux</b></summary>
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# macOS alternative:
+brew install uv
+```
+
+</details>
+
+Verify on any OS:
+
+```bash
+uv --version   # e.g. uv 0.12.5
+```
+
+### 5. WireGuard (course VPN)
+
+The clusters resolve hostnames on the course VPN (`mavasbel.vpn.itam.mx`). **Without the VPN, nothing connects.**
+
+<details>
+<summary><b>Windows</b></summary>
+
+- Download and run the [WireGuard for Windows installer](https://download.wireguard.com/windows-client/wireguard-installer.exe).
+
+</details>
+
+<details>
+<summary><b>macOS</b></summary>
+
+- Install [WireGuard from the Mac App Store](https://apps.apple.com/us/app/wireguard/id1451685025).
+
+</details>
+
+<details>
+<summary><b>Linux</b></summary>
+
+```bash
+# Ubuntu / Debian
+sudo apt install wireguard
+
+# Fedora
+sudo dnf install wireguard-tools
+```
+
+</details>
+
+Then, in the WireGuard app, click **Import tunnel(s) from file** and select your course `.conf` (download it from Canvas or ask your instructor). Activate the tunnel and verify:
+
+```bash
+wg show
+```
+
+`wg show` should list an active interface with the VPN's private IP. If a `handshake` line appears, you are connected.
+
+---
+
 ## Prerequisites
+
+> Everything here is covered step-by-step in [Environment setup](#environment-setup) above.
 
 | Requirement | Version / note |
 |---|---|
-| Docker | Docker Desktop with **Compose v2** (`docker compose` subcommand) — confirm your installed version, any recent Docker Desktop works |
-| Python | **3.13** (see `.python-version`) |
-| uv | latest (`pip install uv` or `winget install astral-sh.uv`) |
+| Docker | Docker Desktop (Windows/macOS) or Docker Engine + Compose plugin (Linux) — see setup section |
+| Python | **3.13** (installed automatically by `uv`, see `.python-version`) |
+| uv | ≥ 0.12.5 (see setup section) |
 | Jupyter | installed via `uv sync` (pulls `ipykernel`) |
-| VPN access | membership to the course VPN, domain `mavasbel.vpn.itam.mx` |
+| VPN access | membership to the course VPN, domain `mavasbel.vpn.itam.mx` (WireGuard — see setup section) |
 | Resources | ≥ 16 GB RAM recommended — Hadoop + Spark concurrently are heavy |
 
 > **Why the VPN?** The clusters use hostnames in a private domain and a fixed internal DNS (`10.15.20.1`). Without the VPN, cross-node name resolution fails.
