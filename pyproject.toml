@@ -19,7 +19,9 @@ dependencies = [
     "pandas>=2.3.3",
     "portforward>=0.7.5",
     "prettytable==3.7.0",
+    "pure-sasl>=0.6.2",
     "pyasyncore>=1.0.4",
+    "pyhive>=0.7.0",
     "pymongo>=4.15.5",
     "pymysql>=1.1.2",
     "pyspark>=4.1.0",
@@ -28,6 +30,8 @@ dependencies = [
     "redis>=7.1.0",
     "sparkmagic>=0.23.0",
     "sqlalchemy>=2.0.45",
+    "thrift>=0.22.0",
+    "thrift-sasl>=0.4.3",
     "tqdm>=4.67.1",
     "venv-pack>=0.2.0",
 ]
