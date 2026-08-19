@@ -93,7 +93,7 @@ flowchart LR
 | MongoDB | `mongo:7.0` | 3 + 3 config servers | `mongodb_infra.ipynb` · `mongodb_infra_configsvr.ipynb` | `mongodb_lab.ipynb` |
 | Hadoop | `apache/hadoop:3.4.3` | namenode + 2 datanodes | `hadoop_infra.ipynb` | `hadoop_lab.ipynb` |
 | Hive | `apache/hive:4.0.1` + `postgres:18` | metastore + server2 | `hive_infra.ipynb` | `hive_lab.ipynb` |
-| Spark | `apache/spark:3.5.7-…` + custom | master + 3 workers + JupyterLab | `spark_infra.ipynb` | `spark_examples.ipynb` |
+| Spark | `apache/spark:3.5.7-…` + custom | master + 3 workers + JupyterLab | `spark_infra.ipynb` | `spark_lab.ipynb` |
 | OpenSearch | `opensearchproject/opensearch:3.4.0` | 3 + dashboards | `opensearch_infra.ipynb` | `opensearch_lab.ipynb` |
 | Redis | `redis:8.4.0-bookworm` | 6 (cluster) | `redis_infra.ipynb` | `redis_lab.ipynb` |
 | Neo4j | `neo4j:ubi9` | 1 (+ APOC, GDS) | `neo4j_infra.ipynb` | `neo4j_lab.ipynb` |
@@ -432,6 +432,30 @@ uv run jupyter lab
 
 Then, for each module: **run `*_infra.ipynb` first**, wait until the cluster reports healthy, then open the matching `*_lab.ipynb`.
 
+Every notebook is paired with a reviewable `py:percent` file and has a
+papermill `parameters` cell. Interactive lab notebooks default to
+`DRY_RUN=False` so their cells execute normally. Automated validation injects
+`DRY_RUN=True`, which verifies that the notebook loads without changing
+containers, databases, or files. Run the infrastructure notebook before the
+lab in dry-run mode too:
+
+```bash
+uv run papermill cassandra/cassandra_infra.ipynb cassandra/cassandra_infra.executed.ipynb -p DRY_RUN True
+uv run papermill cassandra/cassandra_lab.ipynb cassandra/cassandra_lab.executed.ipynb -p DRY_RUN True
+```
+
+For a real lab, connect WireGuard first and confirm that the host owns
+`10.15.20.2`. Then execute the same order with `DRY_RUN=False`:
+
+```bash
+uv run papermill cassandra/cassandra_infra.ipynb cassandra/cassandra_infra.executed.ipynb -p DRY_RUN False
+uv run papermill cassandra/cassandra_lab.ipynb cassandra/cassandra_lab.executed.ipynb -p DRY_RUN False
+```
+
+All generated services use DNS `10.15.20.1`, and every published container
+port binds specifically to VPN address `10.15.20.2`. A lab result is not valid
+if its matching infrastructure notebook did not pass first.
+
 ---
 
 ## Modules
@@ -627,7 +651,7 @@ All clusters share one pattern so a single host can emulate a multi-machine netw
 
 **How it works:** each node is a container whose `hostname` lives on the VPN domain, but which *publishes* a distinct port on the single host IP. Cross-node traffic resolves via the domain/DNS; you connect from your laptop via `host.docker.internal` on the published ports.
 
-> **⚠ Known inconsistency:** Cassandra (`cassandra_infra.ipynb`, `cassandra_lab.ipynb`) and the MongoDB config-server notebook (`mongodb_infra_configsvr.ipynb`) use a *different* subnet — host `10.15.30.2`, DNS `10.15.30.1` — while all other modules use `10.15.20.x`. Everything works, but this is on the list to unify.
+> **Unified VPN network:** every primary and auxiliary lab cluster, including the MongoDB config servers, uses host `10.15.20.2` with DNS `10.15.20.1`.
 
 To move a cluster to a different VPN, edit the `*_VPN_DOMAIN`, `DOCKER_DNS`, and `*_NODE_IPS` constants at the top of each notebook and re-run.
 

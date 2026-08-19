@@ -1,0 +1,2 @@
+# Pair every lab notebook with a reviewable py:percent source file.
+formats = "ipynb,py:percent"

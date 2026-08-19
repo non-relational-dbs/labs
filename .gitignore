@@ -8,12 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
-# Prevents cross-OS dependencies problems
-uv.lock
 
 # Ignore generated *.docker-compose.yml
 *-cluster.docker-compose.yml
 *.docker-compose.yml
+*.executed.ipynb
 
 # cassandra ignore
 cassandra/cluster_certs
