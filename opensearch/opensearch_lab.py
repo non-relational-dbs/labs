@@ -9,7 +9,7 @@
 #   kernelspec:
 #     display_name: .venv
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
@@ -21,51 +21,17 @@
 #
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -93,8 +59,12 @@ print(f"Working directory: {MODULE_DIR}")
 
 
 # %%
-OPENSEARCH_HOST = "10.15.20.2"
+OPENSEARCH_NODE_NAMES = [f"opensearch-node-{i}" for i in range(1, 4)]
 OPENSEARCH_PORTS = [9201, 9202, 9203]
+OPENSEARCH_HOSTS = [
+    (name if NETWORK_MODE == "docker" else VPN_HOST_IP, port)
+    for name, port in zip(OPENSEARCH_NODE_NAMES, OPENSEARCH_PORTS)
+]
 OPENSEARCH_USERNAME = "admin"
 OPENSEARCH_PASSWORD = "OpenSearchP455"
 OPENSEARCH_INDEX = "course-products"
@@ -113,7 +83,7 @@ DELETE_INDEX_AT_END = False
 from opensearchpy import OpenSearch, helpers
 
 client = OpenSearch(
-    hosts=[{"host": OPENSEARCH_HOST, "port": port} for port in OPENSEARCH_PORTS],
+    hosts=[{"host": host, "port": port} for host, port in OPENSEARCH_HOSTS],
     http_auth=(OPENSEARCH_USERNAME, OPENSEARCH_PASSWORD),
     http_compress=True,
     use_ssl=True,
@@ -326,13 +296,22 @@ print(f"Updated p-004 stock to {updated['_source']['stock']}")
 #
 
 # %%
+import time
+
+for _ in range(30):
+    index_health = client.cluster.health(index=OPENSEARCH_INDEX)
+    if index_health["status"] == "green" and index_health["active_shards"] == 6:
+        break
+    time.sleep(2)
+assert index_health["status"] == "green", index_health
+assert index_health["active_shards"] == 6, index_health
+
 shards = client.cat.shards(index=OPENSEARCH_INDEX, format="json")
 started = [shard for shard in shards if shard["state"] == "STARTED"]
 started_primaries = [shard for shard in started if shard["prirep"] == "p"]
 nodes = {shard["node"] for shard in started}
 assert len(started_primaries) == 3, started_primaries
-if cluster_health["status"] == "green":
-    assert len(started) == 6, started
+assert len(started) == 6, started
 assert len(nodes) >= 2, nodes
 for shard in shards:
     print(
@@ -352,4 +331,6 @@ if DELETE_INDEX_AT_END:
     print(f"Deleted index: {OPENSEARCH_INDEX}")
 else:
     print(f"Index retained for exploration: {OPENSEARCH_INDEX}")
+
+client.close()
 

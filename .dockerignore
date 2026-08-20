@@ -1,0 +1,10 @@
+.git
+.venv
+**/.ipynb_checkpoints
+**/__pycache__
+**/*.docker-compose.yml
+**/*.executed.ipynb
+**/mount
+**/configsvr-mount
+**/metastore_db
+**/vscode_server

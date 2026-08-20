@@ -6,7 +6,7 @@
 
 Spin up **Cassandra · MongoDB · Hadoop · Hive · Spark · OpenSearch · Redis · Neo4j** as production-shaped, multi-node clusters — over a VPN — from Jupyter notebooks that *generate their own* Docker Compose files.
 
-[![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python 3.10](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Docker Compose](https://img.shields.io/badge/Docker-Compose%20v2-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![Jupyter](https://img.shields.io/badge/Jupyter-Notebooks-F37626?logo=jupyter&logoColor=white)](https://jupyter.org/)
 [![uv](https://img.shields.io/badge/uv-package%20manager-6B57FF)](https://docs.astral.sh/uv/)
@@ -31,7 +31,7 @@ Spin up **Cassandra · MongoDB · Hadoop · Hive · Spark · OpenSearch · Redis
    - [OpenSearch](#opensearch)
    - [Redis](#redis)
    - [Neo4j](#neo4j)
-7. [The VPN model](#the-vpn-model)
+7. [Network modes](#network-modes)
 8. [Cluster lifecycle & cleanup](#cluster-lifecycle--cleanup)
 9. [Security notes](#security-notes)
 10. [Troubleshooting](#troubleshooting)
@@ -49,7 +49,7 @@ You never hand-edit a raw Compose file. The notebooks generate them from Python 
 
 | | |
 |---|---|
-| **Language / tooling** | Python 3.13 · Jupyter · uv · Docker Compose v2 |
+| **Language / tooling** | Python 3.10 · Java 17 · Jupyter · uv · Docker Compose v2 |
 | **Databases & engines** | Cassandra 5.0 · MongoDB 7.0 · Hadoop 3.4.3 · Hive 4.0.1 · Spark 3.5.7 · OpenSearch 3.4.0 · Redis 8.4 · Neo4j (ubi9) |
 | **Topology** | Distributed, multi-node, over a VPN (`mavasbel.vpn.itam.mx`) |
 | **Learning model** | `infra` (deploy) → `lab` (learn) notebook pairs |
@@ -58,14 +58,14 @@ You never hand-edit a raw Compose file. The notebooks generate them from Python 
 
 ## Architecture at a glance
 
-Every cluster runs on a single VPN host. Each node is a container that advertises a *hostname* on the VPN domain and a *distinct published port* on the host's single IP (`10.15.20.2`), so multiple nodes coexist on one machine while still behaving like a real multi-host network.
+Every cluster supports two real network paths: Docker service discovery by default, or distinct ports published on the configurable WireGuard address (`10.15.20.100` by default).
 
 ```mermaid
 flowchart LR
     subgraph Laptop["💻 Your laptop"]
         NB["Jupyter notebooks"]
     end
-    subgraph VPN["🔒 VPN host — 10.15.20.2"]
+    subgraph VPN["🔒 Optional VPN host — configurable 10.15.20.* address"]
         D["Docker daemon"]
         C["Cassandra 5.0 ×3"]
         M["MongoDB 7.0 ×3 + configsvr"]
@@ -324,9 +324,9 @@ Then install these extensions (open the Extensions view with `Ctrl+Shift+X`, or 
 
 > The Jupyter extension auto-installs its own helpers (renderers, keymap, cell tags). You still need **both** the Python and Jupyter extensions.
 
-### 4. uv (Python 3.13 + dependencies)
+### 4. uv (Python 3.10 + dependencies)
 
-`uv` is the package manager this repo uses (it replaces `pip` + `venv` and installs Python 3.13 for you).
+`uv` is the package manager this repo uses (it replaces `pip` + `venv` and installs the pinned Python 3.10 runtime for you). Python 3.10 matches the Spark 3.5.7 executors.
 
 <details>
 <summary><b>Windows</b> (PowerShell)</summary>
@@ -356,9 +356,19 @@ Verify on any OS:
 uv --version   # e.g. uv 0.12.5
 ```
 
-### 5. WireGuard (course VPN)
+### 5. Java 17
 
-The clusters resolve hostnames on the course VPN (`mavasbel.vpn.itam.mx`). **Without the VPN, nothing connects.**
+Spark 3.5.7 requires a Java 17 runtime. Install [Eclipse Temurin 17](https://adoptium.net/temurin/releases/?version=17) and verify:
+
+```bash
+java -version
+```
+
+The first line must report version 17. Newer Java releases are not a compatible substitute for this Spark version.
+
+### 6. WireGuard (course VPN)
+
+VPN mode publishes the clusters on the course WireGuard address. Docker mode is the portable default and does not require WireGuard.
 
 <details>
 <summary><b>Windows</b></summary>
@@ -407,13 +417,14 @@ wg show
 | Requirement | Version / note |
 |---|---|
 | Docker | Docker Desktop (Windows/macOS) or Docker Engine + Compose plugin (Linux) — see setup section |
-| Python | **3.13** (installed automatically by `uv`, see `.python-version`) |
+| Python | **3.10** (installed automatically by `uv`, see `.python-version`) |
+| Java | **17** for Spark 3.5.7 |
 | uv | ≥ 0.12.5 (see setup section) |
 | Jupyter | installed via `uv sync` (pulls `ipykernel`) |
 | VPN access | membership to the course VPN, domain `mavasbel.vpn.itam.mx` (WireGuard — see setup section) |
 | Resources | ≥ 16 GB RAM recommended — Hadoop + Spark concurrently are heavy |
 
-> **Why the VPN?** The clusters use hostnames in a private domain and a fixed internal DNS (`10.15.20.1`). Without the VPN, cross-node name resolution fails.
+> **Why the VPN?** VPN mode makes the published services reachable through the course subnet and uses DNS `10.15.20.1`. Docker mode keeps the data path inside deterministic Compose networks.
 
 ---
 
@@ -430,31 +441,40 @@ uv sync
 uv run jupyter lab
 ```
 
-Then, for each module: **run `*_infra.ipynb` first**, wait until the cluster reports healthy, then open the matching `*_lab.ipynb`.
+Then, for each module: **run `*_infra.ipynb` first**, wait until the cluster reports healthy, then run the matching `*_lab.ipynb`. These are real executions; the labs have no `DRY_RUN` path.
 
-Every notebook is paired with a reviewable `py:percent` file and has a
-papermill `parameters` cell. Interactive lab notebooks default to
-`DRY_RUN=False` so their cells execute normally. Automated validation injects
-`DRY_RUN=True`, which verifies that the notebook loads without changing
-containers, databases, or files. Run the infrastructure notebook before the
-lab in dry-run mode too:
+Every notebook is paired with a reviewable `py:percent` file and has exactly one papermill `parameters` cell. The shared parameters are:
 
-```bash
-uv run papermill cassandra/cassandra_infra.ipynb cassandra/cassandra_infra.executed.ipynb -p DRY_RUN True
-uv run papermill cassandra/cassandra_lab.ipynb cassandra/cassandra_lab.executed.ipynb -p DRY_RUN True
-```
+| Parameter | Default | Purpose |
+|---|---|---|
+| `NETWORK_MODE` | `"docker"` | `docker` uses service names and internal ports; `vpn` uses the configured WireGuard address |
+| `VPN_HOST_IP` | `"10.15.20.100"` | local WireGuard address used only by VPN mode |
+| `VPN_DNS_IP` | `"10.15.20.1"` | DNS server used only by VPN-mode containers |
+| `START_FROM_SCRATCH` | `False` | infra notebooks only; set `True` for an isolated clean rebuild |
 
-For a real lab, connect WireGuard first and confirm that the host owns
-`10.15.20.2`. Then execute the same order with `DRY_RUN=False`:
+Build the Docker-network runner once from this project's lockfile:
 
 ```bash
-uv run papermill cassandra/cassandra_infra.ipynb cassandra/cassandra_infra.executed.ipynb -p DRY_RUN False
-uv run papermill cassandra/cassandra_lab.ipynb cassandra/cassandra_lab.executed.ipynb -p DRY_RUN False
+docker build -t non-relational-dbs-labs-runner -f Dockerfile.runner .
 ```
 
-All generated services use DNS `10.15.20.1`, and every published container
-port binds specifically to VPN address `10.15.20.2`. A lab result is not valid
-if its matching infrastructure notebook did not pass first.
+Docker mode is the default. Run infrastructure on the host, then run the lab from the runner attached to the generated network:
+
+```bash
+uv run papermill cassandra/cassandra_infra.ipynb cassandra/cassandra_infra.executed.ipynb -p START_FROM_SCRATCH true
+docker run --rm --network cassandra-network -v "${PWD}:/workspace" -w /workspace/cassandra non-relational-dbs-labs-runner papermill cassandra_lab.ipynb cassandra_lab.executed.ipynb -k python3
+```
+
+For VPN mode, connect WireGuard, confirm that this machine owns the configured address, and inject `NETWORK_MODE=vpn` into both notebooks:
+
+```bash
+uv run papermill cassandra/cassandra_infra.ipynb cassandra/cassandra_infra.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p START_FROM_SCRATCH true
+uv run papermill cassandra/cassandra_lab.ipynb cassandra/cassandra_lab.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100
+```
+
+Spark depends on the Hadoop stack, so run `hadoop_infra.ipynb` before `spark_infra.ipynb`. The lockfile-derived runner is also used for Spark VPN mode so the Linux executors and driver share Python 3.10 while the master, HDFS, and driver callback ports use `VPN_HOST_IP`.
+
+A lab result is invalid if its required infrastructure notebook did not pass first.
 
 ---
 
@@ -638,32 +658,37 @@ The lab covers node/relationship creation and property-bearing relationship patt
 
 ---
 
-## The VPN model
+## Network modes
 
-All clusters share one pattern so a single host can emulate a multi-machine network:
+All notebooks support exactly two real execution modes. `docker` is always the default.
+
+| Mode | Client path | Published binding | DNS |
+|---|---|---|---|
+| `docker` | lockfile-derived runner attached to the Compose network | `127.0.0.1` for optional host inspection | Docker service discovery |
+| `vpn` | configured WireGuard address | `VPN_HOST_IP` | `VPN_DNS_IP` (`10.15.20.1`) |
+
+The current course defaults are:
 
 | Concept | Value |
 |---|---|
 | VPN domain | `mavasbel.vpn.itam.mx` |
-| Host IP | `10.15.20.2` |
+| Configurable host IP | `10.15.20.100` |
 | Internal DNS | `10.15.20.1` |
 | Host alias inside notebooks | `host.docker.internal` |
 
-**How it works:** each node is a container whose `hostname` lives on the VPN domain, but which *publishes* a distinct port on the single host IP. Cross-node traffic resolves via the domain/DNS; you connect from your laptop via `host.docker.internal` on the published ports.
+In Docker mode, cluster membership and lab traffic use Compose service names and internal container ports. In VPN mode, every published port binds only to `VPN_HOST_IP`; cluster addresses and client endpoints derive from that parameter while DNS remains a separate value.
 
-> **Unified VPN network:** every primary and auxiliary lab cluster, including the MongoDB config servers, uses host `10.15.20.2` with DNS `10.15.20.1`.
-
-To move a cluster to a different VPN, edit the `*_VPN_DOMAIN`, `DOCKER_DNS`, and `*_NODE_IPS` constants at the top of each notebook and re-run.
+To use a different WireGuard address, inject `VPN_HOST_IP` through papermill or edit the parameters cell and rerun the infrastructure notebook. Do not replace Docker-internal service names or `VPN_DNS_IP`.
 
 ---
 
 ## Cluster lifecycle & cleanup
 
-Every infra notebook starts with a `*_START_FROM_SCRATCH` flag:
+Every infra notebook exposes `START_FROM_SCRATCH` in its parameters cell:
 
 | Value | Behavior |
 |---|---|
-| `True` | tears down the previous stack (`docker compose … down -v`), wipes mount directories, regenerates the `*-cluster.docker-compose.yml`, and boots fresh |
+| `True` | tears down the previous stack (`docker compose … down -v`), clears generated state, regenerates the Compose file, and boots fresh |
 | `False` | reuses existing state |
 
 The generated `*.docker-compose.yml` files are **git-ignored** and recreated on every run — never edit them by hand; edit the notebook constants instead.
@@ -687,8 +712,8 @@ docker compose -f <name>.docker-compose.yml down -v
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Nodes can't see each other | DNS/subnet mismatch | Confirm VPN is connected; check `DOCKER_DNS` + node IPs |
-| Port already in use | Stale container / another module | `docker compose … down -v`, or set `*_START_FROM_SCRATCH = True` |
+| Nodes can't see each other | Wrong network mode or address | Confirm `NETWORK_MODE`; for VPN, confirm `VPN_HOST_IP` is assigned locally |
+| Port already in use | Stale container / another module | `docker compose … down -v`, or set `START_FROM_SCRATCH=True` |
 | Hive/Tez errors | Tez not loaded in HDFS | Re-run the "Load dist-lib" cell in `hive_infra.ipynb` |
 | Spark jobs fail on workers | Missing venv-pack env | Re-run `spark_infra.ipynb` build cells (`spark-jupyter`, `spark-job-venv`) |
 | Cassandra cluster won't form | SSL/rackdc misconfig | Re-run cert-generation cells before start |

@@ -9,58 +9,24 @@
 #   kernelspec:
 #     display_name: non-relational-dbs-labs
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
 # # Setup
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -89,17 +55,16 @@ print(f"Working directory: {MODULE_DIR}")
 # %%
 CASSANDRA_START_FROM_SCRATCH = False
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
 
-CASSANDRA_CLUSTER_NAME = "cassandra-cluster.mavasbel.vpn.itam.mx"
+CASSANDRA_CLUSTER_NAME = "cassandra-cluster"
 CASSANDRA_TOTAL_NODES = 3
 
-CASSANDRA_NODE_IPS = ["10.15.20.2"] * CASSANDRA_TOTAL_NODES
 CASSANDRA_NODE_NAMES = [f"cassandra-node-{i+1}" for i in range(CASSANDRA_TOTAL_NODES)]
 CASSANDRA_NODE_HOSTNAMES = [
-    f"{CASSANDRA_NODE_NAMES[i]}.mavasbel.vpn.itam.mx"
+    CASSANDRA_NODE_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
     for i in range(CASSANDRA_TOTAL_NODES)
 ]
+CASSANDRA_NODE_IPS = CASSANDRA_NODE_HOSTNAMES
 CASSANDRA_NODE_GOSSIP_PORTS = [7000 + (i + 1) for i in range(CASSANDRA_TOTAL_NODES)]
 CASSANDRA_NODE_RPC_PORTS = [9040 + (i + 1) for i in range(CASSANDRA_TOTAL_NODES)]
 CASSANDRA_NODE_SSL_GOSSIP_PORTS = [7500 + (i + 1) for i in range(CASSANDRA_TOTAL_NODES)]
@@ -137,12 +102,12 @@ cassandra_nodes = [
     DefaultEndPoint(CASSANDRA_NODE_HOSTNAMES[j], CASSANDRA_NODE_RPC_PORTS[j])
     for j in range(CASSANDRA_TOTAL_NODES)
 ]
-print(
-    f"🔗 Connecting to: {[f"{cassandra_node.address}:{cassandra_node.port}" for cassandra_node in cassandra_nodes]}"
-)
-print(
-    f"JDBC URL: jdbc:cassandra://{','.join([f"{cassandra_node.address}:{cassandra_node.port}" for cassandra_node in cassandra_nodes])}"
-)
+cassandra_endpoints = [
+    f"{cassandra_node.address}:{cassandra_node.port}"
+    for cassandra_node in cassandra_nodes
+]
+print(f"🔗 Connecting to: {cassandra_endpoints}")
+print(f"JDBC URL: jdbc:cassandra://{','.join(cassandra_endpoints)}")
 
 auth_provider = PlainTextAuthProvider(
     username=CASSANDRA_INIT_USER, password=CASSANDRA_INIT_PASSWORD
@@ -153,6 +118,8 @@ session = cluster.connect()
 session.row_factory = dict_factory
 print(f"✅ Connected to cluster: {cluster.metadata.cluster_name}")
 print(f"🌐 Nodes found: {len(cluster.metadata.all_hosts())}")
+assert cluster.metadata.cluster_name == CASSANDRA_CLUSTER_NAME
+assert len(cluster.metadata.all_hosts()) == CASSANDRA_TOTAL_NODES
 
 # %%
 import pprint
@@ -278,7 +245,12 @@ print("Batch successfully committed to the cluster.")
 from cassandra.cluster import ResultSet
 from typing import cast
 
-print(cast(ResultSet, session.execute("SELECT count(*) FROM user_metrics")).one())
+count_row = cast(
+    ResultSet, session.execute("SELECT count(*) FROM user_metrics")
+).one()
+row_count = next(iter(count_row.values()))
+assert row_count >= batch_records, row_count
+print(f"Rows stored: {row_count}")
 
 # %%
 from cassandra.cluster import ResultSet
@@ -310,6 +282,7 @@ prepared = session.prepare("SELECT * FROM user_metrics WHERE city=? AND user_id=
 bound = prepared.bind([row['city'], row['user_id']])
 routing_key = bound.routing_key
 nodes = cluster.metadata.get_replicas(keyspace_name, routing_key)
+assert len(nodes) == CASSANDRA_TOTAL_NODES, nodes
 
 print(f"Nodes storing '{row['city']}':")
 for node in nodes:
@@ -412,6 +385,9 @@ user_metrics = (
 for user_metric in user_metrics:
     user_metric.delete()
     print(f"Delete user_metris: {user_metric}")
+
+session.shutdown()
+cluster.shutdown()
 
 # %%
 # from cassandra.cqlengine import connection

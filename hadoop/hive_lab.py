@@ -9,7 +9,7 @@
 #   kernelspec:
 #     display_name: .venv
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
@@ -17,51 +17,17 @@
 #
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -88,10 +54,8 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-HIVE_START_FROM_SCRATCH = False
 HIVE_VPN_DOMAIN = "mavasbel.vpn.itam.mx"
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
 
 POSTGRES_USER = "hive"
 POSTGRES_PASSWORD = "hive"
@@ -102,10 +66,13 @@ HIVE_SCHEMA_INIT_CONTAINER_NAME = "hive-schema-init"
 HIVE_METASTORE_CONTAINER_NAME = "hive-metastore"
 HIVE_SERVER2_CONTAINER_NAME = "hive-server2"
 
-HIVE_DB_HOSTNAME = f"{HIVE_DB_CONTAINER_NAME}.{HIVE_VPN_DOMAIN}"
-HIVE_SCHEMA_INIT_HOSTNAME = f"{HIVE_SCHEMA_INIT_CONTAINER_NAME}.{HIVE_VPN_DOMAIN}"
-HIVE_METASTORE_HOSTNAME = f"{HIVE_METASTORE_CONTAINER_NAME}.{HIVE_VPN_DOMAIN}"
-HIVE_SERVER2_HOSTNAME = f"{HIVE_SERVER2_CONTAINER_NAME}.{HIVE_VPN_DOMAIN}"
+HIVE_DB_HOSTNAME = HIVE_DB_CONTAINER_NAME
+HIVE_SCHEMA_INIT_HOSTNAME = HIVE_SCHEMA_INIT_CONTAINER_NAME
+HIVE_METASTORE_HOSTNAME = HIVE_METASTORE_CONTAINER_NAME
+HIVE_SERVER2_HOSTNAME = HIVE_SERVER2_CONTAINER_NAME
+HIVE_SERVER2_CLIENT_HOST = (
+    HIVE_SERVER2_CONTAINER_NAME if NETWORK_MODE == "docker" else VPN_HOST_IP
+)
 
 HIVE_DB_INTERNAL_PORT = 15432
 HIVE_METASTORE_INTERNAL_PORT = 9083
@@ -126,10 +93,10 @@ HADOOP_RESOURCEMANAGER_TRACKER_PORT = 8031
 HADOOP_RESOURCEMANAGER_SCHEDULER_PORT = 8030
 HADOOP_RESOURCEMANAGER_ADMIN_PORT = 8033
 
-HADOOP_NAMENODE_HOSTNAME = f"namenode.{HIVE_VPN_DOMAIN}"
+HADOOP_NAMENODE_HOSTNAME = "namenode"
 HADOOP_NAMENODE_PORT = 8020
 
-HADOOP_RESOURCEMANAGER_HOSTNAME = f"resourcemanager.{HIVE_VPN_DOMAIN}"
+HADOOP_RESOURCEMANAGER_HOSTNAME = "resourcemanager"
 HADOOP_RESOURCEMANAGER_PORT = 8032
 
 APACHE_HIVE_IMAGE = "apache/hive:4.0.1"
@@ -144,6 +111,7 @@ import random
 import os
 
 dataset_filename = "sales.csv"
+random.seed(2026)
 with open(dataset_filename, "w", newline="") as f:
     writer = csv.writer(f)
     # Hive puede ignorar headers fácilmente, pero para simplificar la primera tabla, lo generaremos sin cabecera.
@@ -158,7 +126,7 @@ with open(dataset_filename, "w", newline="") as f:
                 random.choice(["MX", "US", "CO", "ES"]),
             ]
         )
-print(f"¡Dataset '{dataset_filename}' generado localmente con 500,000 filas!")
+print(f"¡Dataset '{dataset_filename}' generado localmente con 50,000 filas!")
 
 # %%
 # Pasamos el archivo del host al contenedor del namenode temporalmente, y luego lo consagramos en HDFS
@@ -175,7 +143,7 @@ import pandas as pd
 
 # 1. Establecer la conexión (aquí no especificamos database porque queremos verlas todas)
 connection = hive.Connection(
-    host=HIVE_DB_HOSTNAME, port=HIVE_SERVER2_EXTERNAL_PORT, username="hive"
+    host=HIVE_SERVER2_CLIENT_HOST, port=HIVE_SERVER2_EXTERNAL_PORT, username="hive"
 )
 
 # 2. Ejecutar la consulta para listar bases de datos
@@ -183,6 +151,7 @@ df_databases = pd.read_sql("SHOW DATABASES", connection)
 
 # 3. Mostrar el resultado
 display(df_databases)
+assert not df_databases.empty
 
 # 4. Cerrar la conexión
 connection.close()
@@ -197,7 +166,7 @@ import pandas as pd
 # 1. Establecemos la conexión al servidor (sin especificar base de datos inicialmente)
 # El usuario "hive" es el estándar, lo agregamos para emular el '-n hive' de beeline
 connection = hive.Connection(
-    host=HIVE_DB_HOSTNAME, port=HIVE_SERVER2_EXTERNAL_PORT, username="hive"
+    host=HIVE_SERVER2_CLIENT_HOST, port=HIVE_SERVER2_EXTERNAL_PORT, username="hive"
 )
 cursor = connection.cursor()
 
@@ -221,7 +190,7 @@ CREATE EXTERNAL TABLE IF NOT EXISTS sales (
 )
 ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
 STORED AS TEXTFILE
-LOCATION 'hdfs://namenode.mavasbel.vpn.itam.mx:8020{HIVE_DATADIR}/external/lab_db/sales'
+LOCATION 'hdfs://namenode:8020{HIVE_DATADIR}/external/lab_db/sales'
 """
 
 print("Creando la tabla externa 'sales'...")
@@ -232,6 +201,7 @@ print("Tablas disponibles en lab_db:")
 # Usamos pandas aquí para que la tabla de resultados se vea bonita en tu Jupyter Notebook
 df_tables = pd.read_sql("SHOW TABLES", connection)
 display(df_tables)
+assert "sales" in df_tables.astype(str).values
 
 # 6. Cerramos la conexión
 connection.close()
@@ -245,7 +215,7 @@ import pandas as pd
 
 # 1. Establecemos la conexión apuntando directamente a 'lab_db'
 connection = hive.Connection(
-    host=HIVE_DB_HOSTNAME,
+    host=HIVE_SERVER2_CLIENT_HOST,
     port=HIVE_SERVER2_EXTERNAL_PORT,
     username="hive",
     database="lab_db",
@@ -259,6 +229,7 @@ df_sample = pd.read_sql(query, connection)
 
 # 4. Mostramos los 5 registros
 display(df_sample)
+assert len(df_sample) == 5
 
 # 5. Cerramos la conexión
 connection.close()
@@ -272,7 +243,7 @@ import pandas as pd
 
 # 1. Establecer la conexión a la base de datos 'lab_db'
 connection = hive.Connection(
-    host=HIVE_DB_HOSTNAME,
+    host=HIVE_SERVER2_CLIENT_HOST,
     port=HIVE_SERVER2_EXTERNAL_PORT,
     username="hive",
     database="lab_db",
@@ -296,6 +267,8 @@ df_summary = pd.read_sql(query_agg, connection)
 
 # 4. Mostrar el DataFrame resultante
 display(df_summary)
+assert not df_summary.empty
+assert int(df_summary["total_ventas"].sum()) == 50_000
 
 # 5. Cerrar la conexión
 connection.close()
@@ -308,7 +281,7 @@ from pyhive import hive
 
 # 1. Conectar a la base de datos lab_db
 connection = hive.Connection(
-    host=HIVE_DB_HOSTNAME,
+    host=HIVE_SERVER2_CLIENT_HOST,
     port=HIVE_SERVER2_EXTERNAL_PORT,
     username="hive",
     database="lab_db",
@@ -347,6 +320,10 @@ print("Insertando datos y creando particiones por país... (esto puede tardar un
 cursor.execute(insert_sql)
 
 print("¡Proceso completado con éxito!")
+
+cursor.execute("SHOW PARTITIONS sales_partitioned")
+partitions = {row[0] for row in cursor.fetchall()}
+assert partitions == {"pais=CO", "pais=ES", "pais=MX", "pais=US"}, partitions
 
 # 5. Cerrar conexión
 connection.close()

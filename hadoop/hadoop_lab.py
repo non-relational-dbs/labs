@@ -9,7 +9,7 @@
 #   kernelspec:
 #     display_name: .venv
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
@@ -17,51 +17,17 @@
 #
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -92,15 +58,16 @@ HADOOP_START_FROM_SCRATCH = False
 HADOOP_DATA_RECORDS = 100_000
 HADOOP_VPN_DOMAIN = "mavasbel.vpn.itam.mx"
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
 
-HADOOP_NAMENODE_HOSTNAME = f"namenode.{HADOOP_VPN_DOMAIN}"
-HADOOP_NAMENODE_IP = "10.15.20.2"
+HADOOP_NAMENODE_HOSTNAME = "namenode" if NETWORK_MODE == "docker" else VPN_HOST_IP
+HADOOP_NAMENODE_IP = HADOOP_NAMENODE_HOSTNAME
 HADOOP_NAMENODE_PORT = 8020
 HADOOP_NAMENODE_WEBUI_PORT = 9870
 
-HADOOP_RESOURCEMANAGER_HOSTNAME = f"resourcemanager.{HADOOP_VPN_DOMAIN}"
-HADOOP_RESOURCEMANAGER_IP = "10.15.20.2"
+HADOOP_RESOURCEMANAGER_HOSTNAME = (
+    "resourcemanager" if NETWORK_MODE == "docker" else VPN_HOST_IP
+)
+HADOOP_RESOURCEMANAGER_IP = HADOOP_RESOURCEMANAGER_HOSTNAME
 HADOOP_RESOURCEMANAGER_WEBUI_PORT = 8088
 HADOOP_RESOURCEMANAGER_RPC_APP_MANAGER_PORT = 8032
 HADOOP_RESOURCEMANAGER_TRACKER_PORT = 8031
@@ -113,21 +80,22 @@ HADOOP_MAPRED_LOG_SERVER_PORT = 19888
 HADOOP_REPLICATION = 2
 HADOOP_NUM_WORKERS = 2
 
-HADOOP_DATANODE_IPS = ["10.15.20.2"] * HADOOP_REPLICATION
 HADOOP_DATANODE_NAMES = [f"datanode-{i+1}" for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_DATANODE_HOSTNAMES = [
-    f"{HADOOP_DATANODE_NAMES[i]}.{HADOOP_VPN_DOMAIN}" for i in range(HADOOP_NUM_WORKERS)
+    HADOOP_DATANODE_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
+    for i in range(HADOOP_NUM_WORKERS)
 ]
+HADOOP_DATANODE_IPS = HADOOP_DATANODE_HOSTNAMES
 HADOOP_DATANODE_WEBUI_PORTS = [9864 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_DATANODE_TRANSFER_PORTS = [9866 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_DATANODE_IPC_PORTS = [6867 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 
-HADOOP_NODEMANAGER_IPS = ["10.15.20.2"] * HADOOP_NUM_WORKERS
 HADOOP_NODEMANAGER_NAMES = [f"nodemanager-{i+1}" for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_NODEMANAGER_HOSTNAMES = [
-    f"{HADOOP_NODEMANAGER_NAMES[i]}.{HADOOP_VPN_DOMAIN}"
+    HADOOP_NODEMANAGER_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
     for i in range(HADOOP_NUM_WORKERS)
 ]
+HADOOP_NODEMANAGER_IPS = HADOOP_NODEMANAGER_HOSTNAMES
 HADOOP_NODEMANAGER_WEBUI_PORTS = [8050 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_NODEMANAGER_RPC_PORTS = [8051 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 
@@ -138,6 +106,29 @@ HADOOP_DATANODE_DATADIR = "/opt/hadoop/dfs/data"
 HADOOP_HDFS_DATADIR = "/opt/hadoop/work-dir"
 
 # %%
+import json
+from urllib.request import urlopen
+
+with urlopen(
+    f"http://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_WEBUI_PORT}/jmx"
+    "?qry=Hadoop:service=NameNode,name=NameNodeInfo",
+    timeout=15,
+) as response:
+    namenode_jmx = json.load(response)
+assert namenode_jmx["beans"], namenode_jmx
+
+with urlopen(
+    f"http://{HADOOP_RESOURCEMANAGER_HOSTNAME}:8088/ws/v1/cluster/info",
+    timeout=15,
+) as response:
+    yarn_info = json.load(response)["clusterInfo"]
+assert yarn_info["state"] == "STARTED", yarn_info
+print(
+    f"Validated {NETWORK_MODE} data path to NameNode and ResourceManager at "
+    f"{HADOOP_NAMENODE_HOSTNAME}"
+)
+
+# %%
 import os
 from pathlib import Path
 
@@ -145,6 +136,22 @@ LOCALHOST_WORKDIR = f"{os.path.join(os.path.relpath(Path.cwd()))}"
 DOCKER_MOUNTDIR = os.path.join(LOCALHOST_WORKDIR, "mount")
 
 Path(DOCKER_MOUNTDIR).mkdir(parents=True, exist_ok=True)
+
+import requests
+
+namenode_jmx = requests.get(
+    f"http://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_WEBUI_PORT}/jmx?qry=Hadoop:service=NameNode,name=NameNodeInfo",
+    timeout=30,
+)
+namenode_jmx.raise_for_status()
+assert namenode_jmx.json()["beans"], namenode_jmx.text
+yarn_metrics = requests.get(
+    f"http://{HADOOP_RESOURCEMANAGER_HOSTNAME}:{HADOOP_RESOURCEMANAGER_WEBUI_PORT}/ws/v1/cluster/metrics",
+    timeout=30,
+)
+yarn_metrics.raise_for_status()
+metrics = yarn_metrics.json()["clusterMetrics"]
+assert metrics["activeNodes"] == HADOOP_NUM_WORKERS, metrics
 
 # %%
 import csv
@@ -307,15 +314,27 @@ shutil.copy(
 # !docker exec namenode hdfs dfs -rm -r -f {HADOOP_HDFS_DATADIR}/output
 
 # 2. Submit the job from the ResourceManager to Nodemanagers
-# !docker exec resourcemanager yarn jar /opt/hadoop/share/hadoop/tools/lib/hadoop-streaming-3.4.3.jar \
-#     -D mapred.reduce.tasks=2 \
-#     -D mapreduce.map.memory.mb=1024 \
-#     -D mapreduce.reduce.memory.mb=1024 \
-#     -files {HADOOP_WORKDIR}/mapper.py,{HADOOP_WORKDIR}/reducer.py \
-#     -mapper "python mapper.py" \
-#     -reducer "python reducer.py" \
-#     -input {HADOOP_HDFS_DATADIR}/input/data.csv \
-#     -output {HADOOP_HDFS_DATADIR}/output
+import subprocess
+
+mapreduce_job = subprocess.run(
+    [
+        "docker", "exec", "resourcemanager", "yarn", "jar",
+        "/opt/hadoop/share/hadoop/tools/lib/hadoop-streaming-3.4.3.jar",
+        "-D", "mapred.reduce.tasks=2",
+        "-D", "mapreduce.map.memory.mb=1024",
+        "-D", "mapreduce.reduce.memory.mb=1024",
+        "-files", f"{HADOOP_WORKDIR}/mapper.py,{HADOOP_WORKDIR}/reducer.py",
+        "-mapper", "python mapper.py",
+        "-reducer", "python reducer.py",
+        "-input", f"{HADOOP_HDFS_DATADIR}/input/data.csv",
+        "-output", f"{HADOOP_HDFS_DATADIR}/output",
+    ],
+    capture_output=True,
+    text=True,
+    timeout=300,
+)
+print(mapreduce_job.stdout)
+assert mapreduce_job.returncode == 0, mapreduce_job.stderr[-4000:]
 
 # 3. Show output file
 # !docker exec namenode hdfs dfs -ls {HADOOP_HDFS_DATADIR}/output
@@ -324,3 +343,16 @@ shutil.copy(
 # 4. Merge and sort output
 # !docker exec namenode hdfs dfs -getmerge {HADOOP_HDFS_DATADIR}/output {HADOOP_WORKDIR}/output.csv
 # !docker exec namenode bash -c "cat {HADOOP_WORKDIR}/output.csv | sort > {HADOOP_WORKDIR}/output_sorted.csv"
+
+# %%
+import subprocess
+
+output = subprocess.run(
+    ["docker", "exec", "namenode", "cat", f"{HADOOP_WORKDIR}/output_sorted.csv"],
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.strip()
+assert output, "MapReduce output is empty"
+assert "\t" in output, output[:200]
+print(f"Validated MapReduce output with {len(output.splitlines())} categories")

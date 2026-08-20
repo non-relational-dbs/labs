@@ -1,0 +1,26 @@
+FROM ghcr.io/astral-sh/uv:python3.10-bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/labs-venv
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        build-essential \
+        docker.io \
+        libkrb5-dev \
+        openjdk-17-jre-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY pyproject.toml uv.lock .python-version ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-install-project
+
+ENV PATH="/opt/labs-venv/bin:${PATH}"
+ENV VIRTUAL_ENV="/opt/labs-venv"
+
+ENTRYPOINT []
+CMD ["bash"]

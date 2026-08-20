@@ -9,58 +9,24 @@
 #   kernelspec:
 #     display_name: .venv
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
 # # Setup
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -87,18 +53,15 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-MONGODB_START_FROM_SCRATCH = False
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
 
 MONGODB_NODES_DOMAIN = "mavasbel.vpn.itam.mx"
 MONGODB_REPLICA_SET = "replica_set_0"
 MONGODB_TOTAL_NODES = 3
 
-# MONGODB_NODE_IPS = ["10.15.20.2"] * MONGODB_TOTAL_NODES
 MONGODB_NODE_NAMES = [f"mongodb-node-{i + 1}" for i in range(MONGODB_TOTAL_NODES)]
 MONGODB_NODE_HOSTNAMES = [
-    f"{MONGODB_NODE_NAMES[i]}.{MONGODB_NODES_DOMAIN}"
+    MONGODB_NODE_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
     for i in range(MONGODB_TOTAL_NODES)
 ]
 MONGODB_NODE_PORTS = [27010 + (i + 1) for i in range(0, MONGODB_TOTAL_NODES)]
@@ -137,10 +100,15 @@ connection_string = (
 )
 print(f"Connection URL: {connection_string}")
 
-client = MongoClient(connection_string)
+client = MongoClient(connection_string, serverSelectionTimeoutMS=20000)
+assert client.admin.command("ping")["ok"] == 1
+replica_status = client.admin.command("replSetGetStatus")
+assert len(replica_status["members"]) == MONGODB_TOTAL_NODES
+assert sum(member["stateStr"] == "PRIMARY" for member in replica_status["members"]) == 1
 
 db = client["db"]
 users_collection = db["users"]
+users_collection.drop()
 
 # %% [markdown]
 # ### Insert
@@ -182,6 +150,7 @@ users_batch = [
 ]
 print("Inserting batch...")
 users_collection.insert_many(users_batch)
+assert users_collection.count_documents({}) == len(users_batch)
 
 # %% [markdown]
 # ### Query
@@ -261,6 +230,7 @@ new_logins = updated_user.get("login_count", 0)
 
 print(f"Updated login count: {new_logins}")
 print(f"Change confirmed: {new_logins == initial_logins + 1}")
+assert new_logins == initial_logins + 1
 
 # %%
 from pymongo import ReturnDocument
@@ -288,6 +258,7 @@ users_collection.update_one(query, new_values)
 
 # %%
 delete_result = users_collection.delete_many({})
+assert delete_result.deleted_count == len(users_batch)
 print(f"Deleted {delete_result.deleted_count} documents.")
 
 # %%
@@ -333,6 +304,18 @@ students_collection.create_index([("promedio", 1)])
 print("\n--- Find con índice ---")
 explain_find_idx = students_collection.find({"promedio": {"$gt": 9.9}}).explain()
 pprint.pprint(explain_find_idx)
+
+def contains_stage(value, stage):
+    if isinstance(value, dict):
+        return value.get("stage") == stage or any(
+            contains_stage(item, stage) for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(contains_stage(item, stage) for item in value)
+    return False
+
+assert contains_stage(explain_find_no_idx["queryPlanner"]["winningPlan"], "COLLSCAN")
+assert contains_stage(explain_find_idx["queryPlanner"]["winningPlan"], "IXSCAN")
 # stats_idx = explain_find_idx.get("executionStats", {})
 # Nota: Cuando hay índice, el 'stage' suele estar dentro de 'inputStage'
 # input_stage = stats_idx.get("executionStages", {}).get("inputStage", {})
@@ -355,3 +338,5 @@ query_explain = {
 stats = db.command(query_explain)
 
 pprint.pprint(stats.get("executionStats", {}))
+client.drop_database("universidad")
+client.close()

@@ -9,58 +9,25 @@
 #   kernelspec:
 #     display_name: .venv
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
 # # Setup
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
+START_FROM_SCRATCH = False
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -87,11 +54,11 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-HIVE_START_FROM_SCRATCH = False
+HIVE_START_FROM_SCRATCH = START_FROM_SCRATCH
 HIVE_VPN_DOMAIN = "mavasbel.vpn.itam.mx"
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
-VPN_HOST_IP = "10.15.20.2"
+DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
+HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 
 POSTGRES_USER = "hive"
 POSTGRES_PASSWORD = "hive"
@@ -102,10 +69,10 @@ HIVE_SCHEMA_INIT_CONTAINER_NAME = "hive-schema-init"
 HIVE_METASTORE_CONTAINER_NAME = "hive-metastore"
 HIVE_SERVER2_CONTAINER_NAME = "hive-server2"
 
-HIVE_DB_HOSTNAME = f"{HIVE_DB_CONTAINER_NAME}.{HIVE_VPN_DOMAIN}"
-HIVE_SCHEMA_INIT_HOSTNAME = f"{HIVE_SCHEMA_INIT_CONTAINER_NAME}.{HIVE_VPN_DOMAIN}"
-HIVE_METASTORE_HOSTNAME = f"{HIVE_METASTORE_CONTAINER_NAME}.{HIVE_VPN_DOMAIN}"
-HIVE_SERVER2_HOSTNAME = f"{HIVE_SERVER2_CONTAINER_NAME}.{HIVE_VPN_DOMAIN}"
+HIVE_DB_HOSTNAME = HIVE_DB_CONTAINER_NAME
+HIVE_SCHEMA_INIT_HOSTNAME = HIVE_SCHEMA_INIT_CONTAINER_NAME
+HIVE_METASTORE_HOSTNAME = HIVE_METASTORE_CONTAINER_NAME
+HIVE_SERVER2_HOSTNAME = HIVE_SERVER2_CONTAINER_NAME
 
 HIVE_DB_INTERNAL_PORT = 15432
 HIVE_METASTORE_INTERNAL_PORT = 9083
@@ -126,10 +93,10 @@ HADOOP_RESOURCEMANAGER_TRACKER_PORT = 8031
 HADOOP_RESOURCEMANAGER_SCHEDULER_PORT = 8030
 HADOOP_RESOURCEMANAGER_ADMIN_PORT = 8033
 
-HADOOP_NAMENODE_HOSTNAME = f"namenode.{HIVE_VPN_DOMAIN}"
+HADOOP_NAMENODE_HOSTNAME = "namenode"
 HADOOP_NAMENODE_PORT = 8020
 
-HADOOP_RESOURCEMANAGER_HOSTNAME = f"resourcemanager.{HIVE_VPN_DOMAIN}"
+HADOOP_RESOURCEMANAGER_HOSTNAME = "resourcemanager"
 HADOOP_RESOURCEMANAGER_PORT = 8032
 
 APACHE_HIVE_IMAGE = "apache/hive:4.0.1"
@@ -149,8 +116,13 @@ mount_path.mkdir(parents=True, exist_ok=True)
 # # Stop hive-cluster.docker-compose.yml
 
 # %%
+import subprocess
+
 if HIVE_START_FROM_SCRATCH:
-    # !docker compose -f hive-cluster.docker-compose.yml down -v
+    subprocess.run(
+        ["docker", "compose", "-f", "hive-cluster.docker-compose.yml", "down", "-v"],
+        check=False,
+    )
 else:
     print("Preserving existing containers and volumes")
 
@@ -484,7 +456,7 @@ hive_compose_dict = {
     "networks": {
         "hadoop-cluster": {
             "external": True,
-            "name": "hadoop-cluster_hadoop-cluster",
+            "name": "hadoop-network",
         }
     },
     "services": {
@@ -501,7 +473,7 @@ hive_compose_dict = {
             "volumes": [f".\\mount\\{HIVE_DB_CONTAINER_NAME}:/var/lib/postgresql"],
             "networks": ["hadoop-cluster"],
             "ports": [
-                f"{VPN_HOST_IP}:{HIVE_DB_EXTERNAL_PORT}:{HIVE_DB_INTERNAL_PORT}"
+                f"{HOST_BIND_IP}:{HIVE_DB_EXTERNAL_PORT}:{HIVE_DB_INTERNAL_PORT}"
             ],
             "extra_hosts": [f"{DOCKER_INTERNAL_HOST}:host-gateway"],
             "dns": DOCKER_DNS,
@@ -563,7 +535,7 @@ hive_compose_dict = {
             ],
             "networks": ["hadoop-cluster"],
             "ports": [
-                f"{VPN_HOST_IP}:{HIVE_METASTORE_EXTERNAL_PORT}:{HIVE_METASTORE_INTERNAL_PORT}"
+                f"{HOST_BIND_IP}:{HIVE_METASTORE_EXTERNAL_PORT}:{HIVE_METASTORE_INTERNAL_PORT}"
             ],
             "extra_hosts": [f"{DOCKER_INTERNAL_HOST}:host-gateway"],
             "dns": DOCKER_DNS,
@@ -604,8 +576,8 @@ hive_compose_dict = {
             ],
             "networks": ["hadoop-cluster"],
             "ports": [
-                f"{VPN_HOST_IP}:{HIVE_SERVER2_EXTERNAL_PORT}:{HIVE_SERVER2_INTERNAL_PORT}",
-                f"{VPN_HOST_IP}:{HIVE_SERVER2_UI_EXTERNAL_PORT}:{HIVE_SERVER2_UI_INTERNAL_PORT}",
+                f"{HOST_BIND_IP}:{HIVE_SERVER2_EXTERNAL_PORT}:{HIVE_SERVER2_INTERNAL_PORT}",
+                f"{HOST_BIND_IP}:{HIVE_SERVER2_UI_EXTERNAL_PORT}:{HIVE_SERVER2_UI_INTERNAL_PORT}",
             ],
             "extra_hosts": [f"{DOCKER_INTERNAL_HOST}:host-gateway"],
             "dns": DOCKER_DNS,
@@ -635,9 +607,18 @@ with open(compose_filename, "w") as f:
 
 # %%
 if HIVE_START_FROM_SCRATCH:
-    # !docker exec -u hadoop namenode hdfs dfs -rm -r -f -skipTrash /tmp/hive/*
-    # !docker exec -u hadoop namenode hdfs dfs -rm -r -f -skipTrash {HIVE_DATADIR}/managed/*
-    # !docker exec -u hadoop namenode hdfs dfs -rm -r -f -skipTrash {HIVE_DATADIR}/external/*
+    for hdfs_path in [
+        "/tmp/hive/*",
+        f"{HIVE_DATADIR}/managed/*",
+        f"{HIVE_DATADIR}/external/*",
+    ]:
+        subprocess.run(
+            [
+                "docker", "exec", "-u", "hadoop", "namenode", "bash", "-c",
+                f"hdfs dfs -rm -r -f -skipTrash {hdfs_path}",
+            ],
+            check=False,
+        )
 
 # !docker exec -u root namenode groupadd hive
 # !docker exec -u root namenode useradd -m -g hive hive

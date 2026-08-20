@@ -9,7 +9,7 @@
 #   kernelspec:
 #     display_name: .venv
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
@@ -17,51 +17,18 @@
 #
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
+START_FROM_SCRATCH = False
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -88,19 +55,21 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-HADOOP_START_FROM_SCRATCH = False
+HADOOP_START_FROM_SCRATCH = START_FROM_SCRATCH
 HADOOP_VPN_DOMAIN = "mavasbel.vpn.itam.mx"
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
-VPN_HOST_IP = "10.15.20.2"
+DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
+HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 
-HADOOP_NAMENODE_HOSTNAME = f"namenode.{HADOOP_VPN_DOMAIN}"
-HADOOP_NAMENODE_IP = "10.15.20.2"
+HADOOP_NAMENODE_HOSTNAME = "namenode"
+HADOOP_NAMENODE_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "namenode"
 HADOOP_NAMENODE_PORT = 8020
 HADOOP_NAMENODE_WEBUI_PORT = 9870
 
-HADOOP_RESOURCEMANAGER_HOSTNAME = f"resourcemanager.{HADOOP_VPN_DOMAIN}"
-HADOOP_RESOURCEMANAGER_IP = "10.15.20.2"
+HADOOP_RESOURCEMANAGER_HOSTNAME = "resourcemanager"
+HADOOP_RESOURCEMANAGER_IP = (
+    VPN_HOST_IP if NETWORK_MODE == "vpn" else "resourcemanager"
+)
 HADOOP_RESOURCEMANAGER_WEBUI_PORT = 8088
 HADOOP_RESOURCEMANAGER_RPC_APP_MANAGER_PORT = 8032
 HADOOP_RESOURCEMANAGER_TRACKER_PORT = 8031
@@ -113,20 +82,26 @@ HADOOP_MAPRED_LOG_SERVER_PORT = 19888
 HADOOP_REPLICATION = 2
 HADOOP_NUM_WORKERS = 2
 
-HADOOP_DATANODE_IPS = ["10.15.20.2"] * HADOOP_REPLICATION
 HADOOP_DATANODE_NAMES = [f"datanode-{i+1}" for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_DATANODE_HOSTNAMES = [
-    f"{HADOOP_DATANODE_NAMES[i]}.{HADOOP_VPN_DOMAIN}" for i in range(HADOOP_NUM_WORKERS)
+    HADOOP_DATANODE_NAMES[i] for i in range(HADOOP_NUM_WORKERS)
 ]
+HADOOP_DATANODE_CLIENT_HOSTS = [
+    VPN_HOST_IP if NETWORK_MODE == "vpn" else name
+    for name in HADOOP_DATANODE_NAMES
+]
+HADOOP_DATANODE_IPS = HADOOP_DATANODE_CLIENT_HOSTS
 HADOOP_DATANODE_WEBUI_PORTS = [9864 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_DATANODE_TRANSFER_PORTS = [9866 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_DATANODE_IPC_PORTS = [6867 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 
-HADOOP_NODEMANAGER_IPS = ["10.15.20.2"] * HADOOP_NUM_WORKERS
 HADOOP_NODEMANAGER_NAMES = [f"nodemanager-{i+1}" for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_NODEMANAGER_HOSTNAMES = [
-    f"{HADOOP_NODEMANAGER_NAMES[i]}.{HADOOP_VPN_DOMAIN}"
-    for i in range(HADOOP_NUM_WORKERS)
+    HADOOP_NODEMANAGER_NAMES[i] for i in range(HADOOP_NUM_WORKERS)
+]
+HADOOP_NODEMANAGER_IPS = [
+    VPN_HOST_IP if NETWORK_MODE == "vpn" else name
+    for name in HADOOP_NODEMANAGER_NAMES
 ]
 HADOOP_NODEMANAGER_WEBUI_PORTS = [8050 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_NODEMANAGER_RPC_PORTS = [8051 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
@@ -148,7 +123,7 @@ HADOOP_HDFS_DATADIR = "/opt/hadoop/work-dir"
 import os
 from pathlib import Path
 
-LOCALHOST_WORKDIR = f"{os.path.join(os.path.relpath(Path.cwd()))}"
+LOCALHOST_WORKDIR = str(MODULE_DIR.resolve())
 DOCKER_MOUNTDIR = os.path.join(LOCALHOST_WORKDIR, "mount")
 
 Path(DOCKER_MOUNTDIR).mkdir(parents=True, exist_ok=True)
@@ -158,8 +133,13 @@ Path(DOCKER_MOUNTDIR).mkdir(parents=True, exist_ok=True)
 #
 
 # %%
+import subprocess
+
 if HADOOP_START_FROM_SCRATCH:
-    # !docker compose -f hadoop-cluster.docker-compose.yml down -v
+    subprocess.run(
+        ["docker", "compose", "-f", "hadoop-cluster.docker-compose.yml", "down", "-v"],
+        check=False,
+    )
 else:
     print("Preserving existing containers and volumes")
 
@@ -169,11 +149,21 @@ else:
 #
 
 # %%
-import shutil
+def clear_bind_directory(path):
+    target = Path(path).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "docker", "run", "--rm", "--mount",
+            f"type=bind,source={target},target=/target",
+            "busybox:1.36", "sh", "-c",
+            "find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +",
+        ],
+        check=True,
+    )
 
 if HADOOP_START_FROM_SCRATCH:
-    shutil.rmtree(DOCKER_MOUNTDIR, ignore_errors=True)
-    Path(DOCKER_MOUNTDIR).mkdir(parents=True, exist_ok=True)
+    clear_bind_directory(DOCKER_MOUNTDIR)
 
 # %% [markdown]
 # # Auxiliary function
@@ -346,7 +336,7 @@ hadoop_compose_file_name = "hadoop-cluster.docker-compose.yml"
 hadoop_compose_dict = {
     "name": "hadoop-cluster",
     "networks": {
-        "hadoop-cluster": {"driver": "bridge"},
+        "hadoop-cluster": {"name": "hadoop-network", "driver": "bridge"},
         # "hadoop-namenode": {"driver": "bridge"},
         # "hadoop-datanodes": {"driver": "bridge"},
         # "hadoop-resourcemanager": {"driver": "bridge"},
@@ -384,14 +374,14 @@ hadoop_compose_dict = {
                 "HDFS-SITE.XML_dfs.namenode.http-address": f"0.0.0.0:{HADOOP_NAMENODE_WEBUI_PORT}",
             },
             "volumes": [
-                f"{os.path.join(DOCKER_MOUNTDIR,"namenode","work-dir")}:{HADOOP_WORKDIR}",
-                f"{os.path.join(DOCKER_MOUNTDIR,"namenode","name-dir")}:{HADOOP_NAMENODE_NAMEDIR}",
+                f"{os.path.join(DOCKER_MOUNTDIR, 'namenode', 'work-dir')}:{HADOOP_WORKDIR}",
+                f"{os.path.join(DOCKER_MOUNTDIR, 'namenode', 'name-dir')}:{HADOOP_NAMENODE_NAMEDIR}",
             ],
             "networks": ["hadoop-cluster"],
             "hostname": HADOOP_NAMENODE_HOSTNAME,
             "ports": [
-                f"{VPN_HOST_IP}:{HADOOP_NAMENODE_PORT}:{HADOOP_NAMENODE_PORT}",
-                f"{VPN_HOST_IP}:{HADOOP_NAMENODE_WEBUI_PORT}:{HADOOP_NAMENODE_WEBUI_PORT}",
+                f"{HOST_BIND_IP}:{HADOOP_NAMENODE_PORT}:{HADOOP_NAMENODE_PORT}",
+                f"{HOST_BIND_IP}:{HADOOP_NAMENODE_WEBUI_PORT}:{HADOOP_NAMENODE_WEBUI_PORT}",
             ],
             "extra_hosts": [
                 f"{DOCKER_INTERNAL_HOST}:host-gateway",
@@ -438,25 +428,26 @@ hadoop_compose_dict = {
             # "env_file": ["envs/common.env"],
             "environment": env_content.copy()
             | {
-                "YARN-SITE.XML_yarn.resourcemanager.webapp.address": f"0.0.0.0:{HADOOP_RESOURCEMANAGER_WEBUI_PORT}",
-                "YARN-SITE.XML_yarn.resourcemanager.address": f"0.0.0.0:{HADOOP_RESOURCEMANAGER_RPC_APP_MANAGER_PORT}",
-                "YARN-SITE.XML_yarn.resourcemanager.scheduler.address": f"0.0.0.0:{HADOOP_RESOURCEMANAGER_SCHEDULER_PORT}",
-                "YARN-SITE.XML_yarn.resourcemanager.resource-tracker.address": f"0.0.0.0:{HADOOP_RESOURCEMANAGER_TRACKER_PORT}",
-                "YARN-SITE.XML_yarn.resourcemanager.admin.address": f"0.0.0.0:{HADOOP_RESOURCEMANAGER_ADMIN_PORT}",
+                "YARN-SITE.XML_yarn.resourcemanager.bind-host": "0.0.0.0",
+                "YARN-SITE.XML_yarn.resourcemanager.webapp.address": f"{HADOOP_RESOURCEMANAGER_HOSTNAME}:{HADOOP_RESOURCEMANAGER_WEBUI_PORT}",
+                "YARN-SITE.XML_yarn.resourcemanager.address": f"{HADOOP_RESOURCEMANAGER_HOSTNAME}:{HADOOP_RESOURCEMANAGER_RPC_APP_MANAGER_PORT}",
+                "YARN-SITE.XML_yarn.resourcemanager.scheduler.address": f"{HADOOP_RESOURCEMANAGER_HOSTNAME}:{HADOOP_RESOURCEMANAGER_SCHEDULER_PORT}",
+                "YARN-SITE.XML_yarn.resourcemanager.resource-tracker.address": f"{HADOOP_RESOURCEMANAGER_HOSTNAME}:{HADOOP_RESOURCEMANAGER_TRACKER_PORT}",
+                "YARN-SITE.XML_yarn.resourcemanager.admin.address": f"{HADOOP_RESOURCEMANAGER_HOSTNAME}:{HADOOP_RESOURCEMANAGER_ADMIN_PORT}",
             },
             "volumes": [
-                f"{os.path.join(DOCKER_MOUNTDIR,"resourcemanager","work-dir")}:{HADOOP_WORKDIR}",
+                f"{os.path.join(DOCKER_MOUNTDIR, 'resourcemanager', 'work-dir')}:{HADOOP_WORKDIR}",
             ],
             "networks": ["hadoop-cluster"],
             "hostname": HADOOP_RESOURCEMANAGER_HOSTNAME,
             "ports": [
-                f"{VPN_HOST_IP}:{HADOOP_RESOURCEMANAGER_WEBUI_PORT}:{HADOOP_RESOURCEMANAGER_WEBUI_PORT}",
-                f"{VPN_HOST_IP}:{HADOOP_RESOURCEMANAGER_RPC_APP_MANAGER_PORT}:{HADOOP_RESOURCEMANAGER_RPC_APP_MANAGER_PORT}",
-                f"{VPN_HOST_IP}:{HADOOP_RESOURCEMANAGER_SCHEDULER_PORT}:{HADOOP_RESOURCEMANAGER_SCHEDULER_PORT}",
-                f"{VPN_HOST_IP}:{HADOOP_RESOURCEMANAGER_TRACKER_PORT}:{HADOOP_RESOURCEMANAGER_TRACKER_PORT}",
-                f"{VPN_HOST_IP}:{HADOOP_RESOURCEMANAGER_ADMIN_PORT}:{HADOOP_RESOURCEMANAGER_ADMIN_PORT}",
-                f"{VPN_HOST_IP}:{HADOOP_MAPRED_JOB_HISTORY_PORT}:{HADOOP_MAPRED_JOB_HISTORY_PORT}",
-                f"{VPN_HOST_IP}:{HADOOP_MAPRED_LOG_SERVER_PORT}:{HADOOP_MAPRED_LOG_SERVER_PORT}",
+                f"{HOST_BIND_IP}:{HADOOP_RESOURCEMANAGER_WEBUI_PORT}:{HADOOP_RESOURCEMANAGER_WEBUI_PORT}",
+                f"{HOST_BIND_IP}:{HADOOP_RESOURCEMANAGER_RPC_APP_MANAGER_PORT}:{HADOOP_RESOURCEMANAGER_RPC_APP_MANAGER_PORT}",
+                f"{HOST_BIND_IP}:{HADOOP_RESOURCEMANAGER_SCHEDULER_PORT}:{HADOOP_RESOURCEMANAGER_SCHEDULER_PORT}",
+                f"{HOST_BIND_IP}:{HADOOP_RESOURCEMANAGER_TRACKER_PORT}:{HADOOP_RESOURCEMANAGER_TRACKER_PORT}",
+                f"{HOST_BIND_IP}:{HADOOP_RESOURCEMANAGER_ADMIN_PORT}:{HADOOP_RESOURCEMANAGER_ADMIN_PORT}",
+                f"{HOST_BIND_IP}:{HADOOP_MAPRED_JOB_HISTORY_PORT}:{HADOOP_MAPRED_JOB_HISTORY_PORT}",
+                f"{HOST_BIND_IP}:{HADOOP_MAPRED_LOG_SERVER_PORT}:{HADOOP_MAPRED_LOG_SERVER_PORT}",
             ],
             "extra_hosts": [
                 f"{DOCKER_INTERNAL_HOST}:host-gateway",
@@ -516,17 +507,18 @@ for i in range(0, HADOOP_NUM_WORKERS):
             "HDFS-SITE.XML_dfs.datanode.address": f"0.0.0.0:{HADOOP_DATANODE_TRANSFER_PORTS[i]}",
             "HDFS-SITE.XML_dfs.datanode.http.address": f"0.0.0.0:{HADOOP_DATANODE_WEBUI_PORTS[i]}",
             "HDFS-SITE.XML_dfs.datanode.ipc.address": f"0.0.0.0:{HADOOP_DATANODE_IPC_PORTS[i]}",
+            "HDFS-SITE.XML_dfs.datanode.hostname": HADOOP_DATANODE_CLIENT_HOSTS[i],
         },
         "volumes": [
-            f"{os.path.join(DOCKER_MOUNTDIR,HADOOP_DATANODE_NAMES[i],"work-dir")}:{HADOOP_WORKDIR}",
-            f"{os.path.join(DOCKER_MOUNTDIR,HADOOP_DATANODE_NAMES[i],"data-dir")}:{HADOOP_DATANODE_DATADIR}",
+            f"{os.path.join(DOCKER_MOUNTDIR, HADOOP_DATANODE_NAMES[i], 'work-dir')}:{HADOOP_WORKDIR}",
+            f"{os.path.join(DOCKER_MOUNTDIR, HADOOP_DATANODE_NAMES[i], 'data-dir')}:{HADOOP_DATANODE_DATADIR}",
         ],
         "networks": ["hadoop-cluster"],
         "hostname": HADOOP_DATANODE_HOSTNAMES[i],
         "ports": [
-            f"{VPN_HOST_IP}:{HADOOP_DATANODE_WEBUI_PORTS[i]}:{HADOOP_DATANODE_WEBUI_PORTS[i]}",
-            f"{VPN_HOST_IP}:{HADOOP_DATANODE_TRANSFER_PORTS[i]}:{HADOOP_DATANODE_TRANSFER_PORTS[i]}",
-            f"{VPN_HOST_IP}:{HADOOP_DATANODE_IPC_PORTS[i]}:{HADOOP_DATANODE_IPC_PORTS[i]}",
+            f"{HOST_BIND_IP}:{HADOOP_DATANODE_WEBUI_PORTS[i]}:{HADOOP_DATANODE_WEBUI_PORTS[i]}",
+            f"{HOST_BIND_IP}:{HADOOP_DATANODE_TRANSFER_PORTS[i]}:{HADOOP_DATANODE_TRANSFER_PORTS[i]}",
+            f"{HOST_BIND_IP}:{HADOOP_DATANODE_IPC_PORTS[i]}:{HADOOP_DATANODE_IPC_PORTS[i]}",
         ],
         "extra_hosts": [
             f"{DOCKER_INTERNAL_HOST}:host-gateway",
@@ -591,13 +583,13 @@ for i in range(0, HADOOP_NUM_WORKERS):
             # ),
         },
         "volumes": [
-            f"{os.path.join(DOCKER_MOUNTDIR,HADOOP_NODEMANAGER_NAMES[i],"work-dir")}:{HADOOP_WORKDIR}",
+            f"{os.path.join(DOCKER_MOUNTDIR, HADOOP_NODEMANAGER_NAMES[i], 'work-dir')}:{HADOOP_WORKDIR}",
         ],
         "networks": ["hadoop-cluster"],
         "hostname": HADOOP_NODEMANAGER_HOSTNAMES[i],
         "ports": [
-            f"{VPN_HOST_IP}:{HADOOP_NODEMANAGER_WEBUI_PORTS[i]}:{HADOOP_NODEMANAGER_WEBUI_PORTS[i]}",
-            f"{VPN_HOST_IP}:{HADOOP_NODEMANAGER_RPC_PORTS[i]}:{HADOOP_NODEMANAGER_RPC_PORTS[i]}",
+            f"{HOST_BIND_IP}:{HADOOP_NODEMANAGER_WEBUI_PORTS[i]}:{HADOOP_NODEMANAGER_WEBUI_PORTS[i]}",
+            f"{HOST_BIND_IP}:{HADOOP_NODEMANAGER_RPC_PORTS[i]}:{HADOOP_NODEMANAGER_RPC_PORTS[i]}",
             # (
             #     f"{HADOOP_NODEMANAGER_JOB_CLIENT_START_PORTS[i]}-{HADOOP_NODEMANAGER_JOB_CLIENT_END_PORTS[i]}"
             #     f":"

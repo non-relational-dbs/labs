@@ -9,7 +9,7 @@
 #   kernelspec:
 #     display_name: .venv
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
@@ -19,51 +19,18 @@
 # `config_rs` replica set.
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
+START_FROM_SCRATCH = False
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -90,14 +57,15 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-MONGODB_START_FROM_SCRATCH = False
+MONGODB_START_FROM_SCRATCH = START_FROM_SCRATCH
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
-VPN_HOST_IP = "10.15.20.2"
+DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
+HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
+BOOTSTRAP_HOST = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 
 # --- CONFIG SERVER CONFIGURATION ---
 MONGODB_CONFIG_SVR_NODES = 3
-MONGODB_STARTING_PORT = 27010
+MONGODB_STARTING_PORT = 27110
 # ------------------------------------
 
 MONGO_INITDB_ROOT_USERNAME = "admin"
@@ -112,7 +80,8 @@ MONGODB_CONFIG_SVR_PORTS = [
     MONGODB_STARTING_PORT + (i + 1) for i in range(MONGODB_CONFIG_SVR_NODES)
 ]
 MONGODB_CONFIG_SVR_HOSTNAMES = [
-    f"{name}.mavasbel.vpn.itam.mx" for name in MONGODB_CONFIG_SVR_NAMES
+    name if NETWORK_MODE == "docker" else VPN_HOST_IP
+    for name in MONGODB_CONFIG_SVR_NAMES
 ]
 
 print(
@@ -127,13 +96,25 @@ print(
     sep="\n",
 )
 
+import subprocess
+
+network_exists = subprocess.run(
+    ["docker", "network", "inspect", "mongodb-network"],
+    capture_output=True,
+    text=True,
+).returncode == 0
+if not network_exists:
+    subprocess.run(
+        ["docker", "network", "create", "mongodb-network"], check=True
+    )
+
 # %%
 import os
 from pathlib import Path
 
-LOCALHOST_WORKDIR = f"{os.path.join(os.path.relpath(Path.cwd()))}"
+LOCALHOST_WORKDIR = str(MODULE_DIR.resolve())
 LOCALHOST_CONFIG_DIR = os.path.abspath("config")
-LOCALHOST_MOUNTDIR = os.path.join(LOCALHOST_WORKDIR, "mount")
+LOCALHOST_MOUNTDIR = os.path.join(LOCALHOST_WORKDIR, "configsvr-mount")
 MONGODB_LOCAL_CLUSTER_KEY_PATH = os.path.join(LOCALHOST_WORKDIR, "mongo-keyfile")
 
 mount_path = Path(LOCALHOST_MOUNTDIR)
@@ -144,7 +125,10 @@ mount_path.mkdir(parents=True, exist_ok=True)
 
 # %%
 if MONGODB_START_FROM_SCRATCH:
-    # !docker compose -f mongodb-configsvr.docker-compose.yml down -v
+    subprocess.run(
+        ["docker", "compose", "-f", "mongodb-configsvr.docker-compose.yml", "down", "-v"],
+        check=False,
+    )
 else:
     print("Preserving existing containers and volumes")
 
@@ -153,14 +137,30 @@ else:
 import shutil
 import stat
 
+def clear_bind_directory(path):
+    target = Path(path).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--mount",
+            f"type=bind,source={target},target=/target",
+            "mongo:8.2.3",
+            "bash",
+            "-c",
+            "find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +",
+        ],
+        check=True,
+    )
+
 if MONGODB_START_FROM_SCRATCH:
     if os.path.exists(MONGODB_LOCAL_CLUSTER_KEY_PATH):
         os.chmod(MONGODB_LOCAL_CLUSTER_KEY_PATH, stat.S_IWRITE)
         os.remove(MONGODB_LOCAL_CLUSTER_KEY_PATH)
-    if os.path.exists(LOCALHOST_CONFIG_DIR):
-        shutil.rmtree(LOCALHOST_CONFIG_DIR)
-    if os.path.exists(LOCALHOST_MOUNTDIR):
-        shutil.rmtree(LOCALHOST_MOUNTDIR)
+    clear_bind_directory(LOCALHOST_CONFIG_DIR)
+    clear_bind_directory(LOCALHOST_MOUNTDIR)
 
 # %% [markdown]
 # # Start mongodb-configsvr.docker-compose.yml
@@ -291,7 +291,7 @@ print("✅ Configuration copied to mount directories.")
 configsvr_compose_dict = {
     "name": "mongodb-configsvr",
     "services": {},
-    "networks": {"mongodb-network": {"driver": "bridge"}},
+    "networks": {"mongodb-network": {"external": True, "name": "mongodb-network"}},
 }
 
 # The bootstrap script handles keyfile copy + two-phase init + real mongod exec.
@@ -317,7 +317,7 @@ for i, node_name in enumerate(MONGODB_CONFIG_SVR_NAMES):
             f"{os.path.join(LOCALHOST_MOUNTDIR, node_name, 'config')}:/etc/mongo/config",
         ],
         "networks": ["mongodb-network"],
-        "ports": [f"{VPN_HOST_IP}:{port}:{port}"],
+        "ports": [f"{HOST_BIND_IP}:{port}:{port}"],
         "extra_hosts": [f"{DOCKER_INTERNAL_HOST}:host-gateway"],
         "dns": DOCKER_DNS,
         "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "512M"}}},
@@ -384,7 +384,7 @@ client_options = {"directConnection": True, "serverSelectionTimeoutMS": 20000}
 
 auth_uri = (
     f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}"
-    f"@{MONGODB_CONFIG_SVR_HOSTNAMES[0]}:{MONGODB_CONFIG_SVR_PORTS[0]}/?authSource=admin"
+    f"@{BOOTSTRAP_HOST}:{MONGODB_CONFIG_SVR_PORTS[0]}/?authSource=admin"
 )
 
 replica_set_config = {

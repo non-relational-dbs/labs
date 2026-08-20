@@ -9,58 +9,25 @@
 #   kernelspec:
 #     display_name: .venv
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
 # # Setup
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
+START_FROM_SCRATCH = False
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -87,10 +54,10 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-SPARK_START_FROM_SCRATCH = False
+SPARK_START_FROM_SCRATCH = START_FROM_SCRATCH
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
-VPN_HOST_IP = "10.15.20.2"
+DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
+HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 SPARK_VPN_DOMAIN = "mavasbel.vpn.itam.mx"
 
 SPARK_DOCKER_BASE = "spark:3.5.7-scala2.12-java17-python3-ubuntu"
@@ -99,24 +66,22 @@ SPARK_JOB_VENV_DOCKER_TAG = "spark-job-venv:3.5.7-scala2.12-java17-python3-ubunt
 SPARK_JOB_VENV_BUILD_DIR = "/opt/spark/venv-build"
 
 SPARK_MASTER_NAME = "spark-master"
-SPARK_MASTER_HOSTNAME = f"{SPARK_MASTER_NAME}.{SPARK_VPN_DOMAIN}"
-# SPARK_MASTER_IP = "10.15.20.2"
+SPARK_MASTER_HOSTNAME = "spark-master-internal"
 SPARK_MASTER_WUBUI_PORT = 6080
 SPARK_MASTER_PORT = 6077
 
 SPARK_TOTAL_WORKERS = 3
 SPARK_WORKER_NAMES = [f"spark-worker-{i+1}" for i in range(SPARK_TOTAL_WORKERS)]
-SPARK_WORKER_HOSTNAMES = [
-    f"{SPARK_WORKER_NAMES[i]}.{SPARK_VPN_DOMAIN}" for i in range(SPARK_TOTAL_WORKERS)
+SPARK_WORKER_HOSTNAMES = SPARK_WORKER_NAMES
+SPARK_WORKER_IPS = [
+    VPN_HOST_IP if NETWORK_MODE == "vpn" else name for name in SPARK_WORKER_NAMES
 ]
-SPARK_WORKER_IPS = ["10.15.20.2"] * SPARK_TOTAL_WORKERS
 SPARK_WORKER_WEBUI_PORTS = [6080 + (i + 1) for i in range(SPARK_TOTAL_WORKERS)]
 
 SPARK_WORKDIR = "/opt/spark/work-dir"
 
 JUPYTER_LAB_NAME = "spark-jupyter"
-JUPYTER_LAB_HOSTNAME = f"{JUPYTER_LAB_NAME}.{SPARK_VPN_DOMAIN}"
-# JUPYTER_LAB_IP = "10.15.20.2"
+JUPYTER_LAB_HOSTNAME = JUPYTER_LAB_NAME
 JUPYTER_LAB_PORT = 6888
 JUPYTER_LAB_MONITOR_PORT = 4040
 JUPYTER_LAB_TOKEN = ""
@@ -128,7 +93,7 @@ SPARK_SHARED_WORKSPACE_DIR = f"/opt/spark/{SPARK_SHARED_WORKSPACE}"
 import os
 from pathlib import Path
 
-LOCALHOST_WORKDIR = f"{os.path.join(os.path.relpath(Path.cwd()))}"
+LOCALHOST_WORKDIR = str(MODULE_DIR.resolve())
 DOCKER_MOUNTDIR = os.path.join(LOCALHOST_WORKDIR, "mount")
 
 path = Path(LOCALHOST_WORKDIR)
@@ -138,27 +103,40 @@ path.mkdir(parents=True, exist_ok=True)
 # # Stop spark-cluster.docker-compose.yml
 
 # %%
+import subprocess
+
 if SPARK_START_FROM_SCRATCH:
-    # !docker compose -f spark-cluster.docker-compose.yml down -v
+    subprocess.run(
+        ["docker", "compose", "-f", "spark-cluster.docker-compose.yml", "down", "-v"],
+        check=False,
+    )
 else:
     print("Preserving existing containers and volumes")
 
 
 # %%
-import shutil
+def clear_bind_directory(path):
+    target = Path(path).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "docker", "run", "--rm", "--mount",
+            f"type=bind,source={target},target=/target",
+            "busybox:1.36", "sh", "-c",
+            "find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +",
+        ],
+        check=True,
+    )
 
 if SPARK_START_FROM_SCRATCH :
     # shutil.rmtree(os.path.join(DOCKER_MOUNTDIR, SPARK_SHARED_WORKSPACE, "spark-warehouse"), ignore_errors=True)
     # shutil.rmtree(
     #     os.path.join(DOCKER_MOUNTDIR, SPARK_SHARED_WORKSPACE, "iceberg-warehouse"), ignore_errors=True
     # )
-    shutil.rmtree(os.path.join(DOCKER_MOUNTDIR, SPARK_MASTER_NAME), ignore_errors=True)
+    clear_bind_directory(os.path.join(DOCKER_MOUNTDIR, SPARK_MASTER_NAME))
     for spark_worker_name in SPARK_WORKER_NAMES:
-        shutil.rmtree(
-            os.path.join(DOCKER_MOUNTDIR, spark_worker_name), ignore_errors=True
-        )
-    shutil.rmtree(os.path.join(DOCKER_MOUNTDIR, SPARK_MASTER_NAME), ignore_errors=True)
-    shutil.rmtree(os.path.join(DOCKER_MOUNTDIR, SPARK_SHARED_WORKSPACE), ignore_errors=True)
+        clear_bind_directory(os.path.join(DOCKER_MOUNTDIR, spark_worker_name))
+    clear_bind_directory(os.path.join(DOCKER_MOUNTDIR, SPARK_SHARED_WORKSPACE))
     
     Path(os.path.join(DOCKER_MOUNTDIR, JUPYTER_LAB_NAME)).mkdir(parents=True, exist_ok=True)
 
@@ -257,14 +235,16 @@ from IPython.display import Markdown, display
 
 SPARK_VSCODE_SERVER_DIR = os.path.join(LOCALHOST_WORKDIR, "vscode_server")
 SPARK_MOUNT_JARS = [
-    f"{os.path.join(LOCALHOST_WORKDIR,"jars",file)}:/opt/spark/jars/{file}"
+    f"{os.path.join(LOCALHOST_WORKDIR, 'jars', file)}:/opt/spark/jars/{file}"
     for file in os.listdir(os.path.join(LOCALHOST_WORKDIR, "jars"))
     if file.endswith("jar")
 ]
 
 spark_compose_dict = {
     "name": "spark-cluster",
-    "networks": {"spark-cluster": {"driver": "bridge"}},
+    "networks": {
+        "spark-cluster": {"external": True, "name": "hadoop-network"},
+    },
     "services": {
         SPARK_MASTER_NAME: {
             "image": f"apache/{SPARK_DOCKER_BASE}",
@@ -283,11 +263,13 @@ spark_compose_dict = {
                 f"{os.path.join(DOCKER_MOUNTDIR,SPARK_MASTER_NAME)}:{SPARK_WORKDIR}"
             ]
             + SPARK_MOUNT_JARS,
-            "networks": ["spark-cluster"],
+            "networks": {
+                "spark-cluster": {"aliases": [SPARK_MASTER_HOSTNAME]},
+            },
             "hostname": SPARK_MASTER_HOSTNAME,
             "ports": [
-                f"{VPN_HOST_IP}:{SPARK_MASTER_WUBUI_PORT}:{SPARK_MASTER_WUBUI_PORT}",
-                f"{VPN_HOST_IP}:{SPARK_MASTER_PORT}:{SPARK_MASTER_PORT}",
+                f"{HOST_BIND_IP}:{SPARK_MASTER_WUBUI_PORT}:{SPARK_MASTER_WUBUI_PORT}",
+                f"{HOST_BIND_IP}:{SPARK_MASTER_PORT}:{SPARK_MASTER_PORT}",
             ],
             "extra_hosts": [
                 f"{DOCKER_INTERNAL_HOST}:host-gateway",
@@ -344,8 +326,8 @@ spark_compose_dict = {
             "networks": ["spark-cluster"],
             "hostname": JUPYTER_LAB_HOSTNAME,
             "ports": [
-                f"{VPN_HOST_IP}:{JUPYTER_LAB_PORT}:{JUPYTER_LAB_PORT}",
-                f"{VPN_HOST_IP}:{JUPYTER_LAB_MONITOR_PORT}:{JUPYTER_LAB_MONITOR_PORT}",
+                f"{HOST_BIND_IP}:{JUPYTER_LAB_PORT}:{JUPYTER_LAB_PORT}",
+                f"{HOST_BIND_IP}:{JUPYTER_LAB_MONITOR_PORT}:{JUPYTER_LAB_MONITOR_PORT}",
             ],
             "extra_hosts": [
                 f"{DOCKER_INTERNAL_HOST}:host-gateway",
@@ -392,7 +374,7 @@ for i in range(SPARK_TOTAL_WORKERS):
         "networks": ["spark-cluster"],
         "hostname": SPARK_WORKER_HOSTNAMES[i],
         "ports": [
-            f"{VPN_HOST_IP}:{SPARK_WORKER_WEBUI_PORTS[i]}:{SPARK_WORKER_WEBUI_PORTS[i]}"
+            f"{HOST_BIND_IP}:{SPARK_WORKER_WEBUI_PORTS[i]}:{SPARK_WORKER_WEBUI_PORTS[i]}"
         ],
         "extra_hosts": [
             f"{DOCKER_INTERNAL_HOST}:host-gateway",

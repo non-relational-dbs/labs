@@ -9,58 +9,24 @@
 #   kernelspec:
 #     display_name: .venv
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
 # # Setup
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -87,8 +53,6 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-NEO4J_START_FROM_SCRATCH = False
-
 # NEO4J_WORKDIR = "/var/lib/neo4j"
 NEO4J_PORT = 7687
 NEO4J_WEBUI_PORT = 7474
@@ -112,10 +76,12 @@ mount_path.mkdir(parents=True, exist_ok=True)
 # %%
 from neo4j import GraphDatabase
 
-n4j_uri = f"bolt://localhost:{NEO4J_PORT}"
+NEO4J_HOST = "neo4j" if NETWORK_MODE == "docker" else VPN_HOST_IP
+n4j_uri = f"bolt://{NEO4J_HOST}:{NEO4J_PORT}"
 n4j_auth = (NEO4J_INIT_USER, NEO4J_INIT_PASSWORD)
 
 driver = GraphDatabase.driver(n4j_uri, auth=n4j_auth)
+driver.verify_connectivity()
 session = driver.session()
 
 # %% [markdown]
@@ -153,6 +119,9 @@ with session.begin_transaction() as transaction:
         ],
     )
     print("Successfully inserted nodes")
+
+person_count = session.run("MATCH (p:Person) RETURN count(p) AS total").single()["total"]
+assert person_count == total_persons, person_count
 
 # %% [markdown]
 # ### Insert relationships
@@ -200,6 +169,16 @@ with session.begin_transaction() as transaction:
         )
         print("Successfully added relationships")
 
+relationship_count = session.run(
+    "MATCH (:Person)-[r:knows]->(:Person) RETURN count(r) AS total"
+).single()["total"]
+assert relationship_count == len(relationships_data) * 2, relationship_count
+
+apoc_version = session.run("RETURN apoc.version() AS version").single()["version"]
+gds_version = session.run("RETURN gds.version() AS version").single()["version"]
+assert apoc_version and gds_version
+print(f"APOC {apoc_version}; GDS {gds_version}")
+
 # %% [markdown]
 # ### Delete nodes
 
@@ -210,3 +189,8 @@ with session.begin_transaction() as transaction:
     transaction.run("MATCH (p:Person) DETACH DELETE p")
 
     print("Successfully deleted persons")
+
+remaining = session.run("MATCH (p:Person) RETURN count(p) AS total").single()["total"]
+assert remaining == 0, remaining
+session.close()
+driver.close()

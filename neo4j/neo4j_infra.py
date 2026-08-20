@@ -9,58 +9,25 @@
 #   kernelspec:
 #     display_name: .venv
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
 # # Setup
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
+START_FROM_SCRATCH = False
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -87,9 +54,9 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-NEO4J_START_FROM_SCRATCH = False
-DOCKER_DNS = ["10.15.20.1"]
-VPN_HOST_IP = "10.15.20.2"
+NEO4J_START_FROM_SCRATCH = START_FROM_SCRATCH
+DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
+HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 
 # NEO4J_WORKDIR = "/var/lib/neo4j"
 NEO4J_PORT = 7687
@@ -102,7 +69,7 @@ NEO4J_INIT_PASSWORD = "password"
 import os
 from pathlib import Path
 
-LOCALHOST_WORKDIR = f"{os.path.join(os.path.relpath(Path.cwd()))}"
+LOCALHOST_WORKDIR = str(MODULE_DIR.resolve())
 DOCKER_MOUNTDIR = os.path.join(LOCALHOST_WORKDIR, "mount")
 
 mount_path = Path(DOCKER_MOUNTDIR)
@@ -112,18 +79,33 @@ mount_path.mkdir(parents=True, exist_ok=True)
 # ## Stop neo4j.docker-compose.yml
 
 # %%
+import subprocess
+
 if NEO4J_START_FROM_SCRATCH:
-    # !docker compose -f neo4j.docker-compose.yml down -v
+    subprocess.run(
+        ["docker", "compose", "-f", "neo4j.docker-compose.yml", "down", "-v"],
+        check=False,
+    )
 else:
     print("Preserving existing containers and volumes")
 
 
 # %%
-import shutil
+def clear_bind_directory(path):
+    target = Path(path).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "docker", "run", "--rm", "--mount",
+            f"type=bind,source={target},target=/target",
+            "busybox:1.36", "sh", "-c",
+            "find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +",
+        ],
+        check=True,
+    )
 
 if NEO4J_START_FROM_SCRATCH:
-    shutil.rmtree(DOCKER_MOUNTDIR)
-    Path(DOCKER_MOUNTDIR).mkdir(parents=True, exist_ok=True)
+    clear_bind_directory(DOCKER_MOUNTDIR)
 
 # %% [markdown]
 # # Start neo4j.docker-compose.yml
@@ -135,15 +117,18 @@ from IPython.display import Markdown, display
 
 neo4j_compose_dict = {
     "name": "neo4j-compose",
+    "networks": {
+        "neo4j-network": {"name": "neo4j-network", "driver": "bridge"}
+    },
     "services": {
         "neo4j": {
             "image": "neo4j:ubi9",
             "container_name": "neo4j-instance",
             "volumes": [
-                f"{os.path.join(DOCKER_MOUNTDIR,"data")}:/data",
-                f"{os.path.join(DOCKER_MOUNTDIR,"neo4j","logs")}:/logs",
-                f"{os.path.join(DOCKER_MOUNTDIR,"neo4j","import")}:/var/lib/neo4j/import",
-                f"{os.path.join(DOCKER_MOUNTDIR,"plugins")}:/plugins",
+                f"{os.path.join(DOCKER_MOUNTDIR, 'data')}:/data",
+                f"{os.path.join(DOCKER_MOUNTDIR, 'neo4j', 'logs')}:/logs",
+                f"{os.path.join(DOCKER_MOUNTDIR, 'neo4j', 'import')}:/var/lib/neo4j/import",
+                f"{os.path.join(DOCKER_MOUNTDIR, 'plugins')}:/plugins",
             ],
             "environment": {
                 "NEO4J_AUTH": f"{NEO4J_INIT_USER}/{NEO4J_INIT_PASSWORD}",
@@ -162,12 +147,23 @@ neo4j_compose_dict = {
                 "NEO4J_server_bolt_enabled": "true",
             },
             "ports": [
-                f"{VPN_HOST_IP}:{NEO4J_WEBUI_PORT}:{NEO4J_WEBUI_PORT}",
-                f"{VPN_HOST_IP}:{NEO4J_PORT}:{NEO4J_PORT}",
+                f"{HOST_BIND_IP}:{NEO4J_WEBUI_PORT}:{NEO4J_WEBUI_PORT}",
+                f"{HOST_BIND_IP}:{NEO4J_PORT}:{NEO4J_PORT}",
             ],
+            "networks": ["neo4j-network"],
             "dns": DOCKER_DNS,
             "restart": "unless-stopped",
             "deploy": {"resources": {"limits": {"cpus": "2.0", "memory": "2048M"}}},
+            "healthcheck": {
+                "test": [
+                    "CMD-SHELL",
+                    f"cypher-shell -u {NEO4J_INIT_USER} -p {NEO4J_INIT_PASSWORD} 'RETURN 1' >/dev/null",
+                ],
+                "interval": "10s",
+                "timeout": "10s",
+                "retries": 30,
+                "start_period": "30s",
+            },
         }
     },
 }

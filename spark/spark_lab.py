@@ -9,58 +9,24 @@
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
 # # Setup
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -87,9 +53,7 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-SPARK_START_FROM_SCRATCH = False
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
 SPARK_VPN_DOMAIN = "mavasbel.vpn.itam.mx"
 
 SPARK_DOCKER_BASE = "spark:3.5.7-scala2.12-java17-python3-ubuntu"
@@ -98,24 +62,27 @@ SPARK_JOB_VENV_DOCKER_TAG = "spark-job-venv:3.5.7-scala2.12-java17-python3-ubunt
 SPARK_JOB_VENV_BUILD_DIR = "/opt/spark/venv-build"
 
 SPARK_MASTER_NAME = "spark-master"
-SPARK_MASTER_HOSTNAME = f"{SPARK_MASTER_NAME}.{SPARK_VPN_DOMAIN}"
-# SPARK_MASTER_IP = "10.15.20.2"
+SPARK_MASTER_HOSTNAME = (
+    SPARK_MASTER_NAME if NETWORK_MODE == "docker" else VPN_HOST_IP
+)
 SPARK_MASTER_WUBUI_PORT = 6080
 SPARK_MASTER_PORT = 6077
 
 SPARK_TOTAL_WORKERS = 3
 SPARK_WORKER_NAMES = [f"spark-worker-{i+1}" for i in range(SPARK_TOTAL_WORKERS)]
 SPARK_WORKER_HOSTNAMES = [
-    f"{SPARK_WORKER_NAMES[i]}.{SPARK_VPN_DOMAIN}" for i in range(SPARK_TOTAL_WORKERS)
+    SPARK_WORKER_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
+    for i in range(SPARK_TOTAL_WORKERS)
 ]
-SPARK_WORKER_IPS = ["10.15.20.2"] * SPARK_TOTAL_WORKERS
+SPARK_WORKER_IPS = SPARK_WORKER_HOSTNAMES
 SPARK_WORKER_WEBUI_PORTS = [6080 + (i + 1) for i in range(SPARK_TOTAL_WORKERS)]
 
 SPARK_WORKDIR = "/opt/spark/work-dir"
 
 JUPYTER_LAB_NAME = "spark-jupyter"
-JUPYTER_LAB_HOSTNAME = f"{JUPYTER_LAB_NAME}.{SPARK_VPN_DOMAIN}"
-# JUPYTER_LAB_IP = "10.15.20.2"
+JUPYTER_LAB_HOSTNAME = (
+    "labs-spark-runner" if NETWORK_MODE == "docker" else VPN_HOST_IP
+)
 JUPYTER_LAB_PORT = 6888
 JUPYTER_LAB_MONITOR_PORT = 4040
 JUPYTER_LAB_TOKEN = ""
@@ -124,8 +91,8 @@ SPARK_SHARED_WORKSPACE = "shared-workspace"
 SPARK_SHARED_WORKSPACE_DIR = f"/opt/spark/{SPARK_SHARED_WORKSPACE}"
 
 # %%
-HADOOP_NAMENODE_HOSTNAME = "namenode.mavasbel.vpn.itam.mx"
-HADOOP_NAMENODE_IP = "10.15.20.2"
+HADOOP_NAMENODE_HOSTNAME = "namenode" if NETWORK_MODE == "docker" else VPN_HOST_IP
+HADOOP_NAMENODE_IP = HADOOP_NAMENODE_HOSTNAME
 HADOOP_NAMENODE_PORT = 8020
 
 # %%
@@ -135,9 +102,6 @@ from pathlib import Path
 SPARK_DATADIR = Path(os.path.join(os.path.abspath(Path.cwd()), "data"))
 SPARK_DATADIR.mkdir(parents=True, exist_ok=True)
 
-# %%
-# !pip install faker mimesis
-
 # %% [markdown]
 # ##### Cleaning Spark context
 
@@ -145,14 +109,13 @@ SPARK_DATADIR.mkdir(parents=True, exist_ok=True)
 import pyspark
 from pyspark import SparkContext
 
-sc = SparkContext.getOrCreate()
-print(f"      Spark Version: {sc.version}")
+sc = SparkContext._active_spark_context
 print(f"    PySpark Version: {pyspark.__version__}")
 
-try:
+if sc is not None:
     sc.stop()
     print("🧹 Ghost SparkContext cleaned up.")
-except Exception:
+else:
     print("✨ No existing SparkContext to clean.")
 
 # %% [markdown]
@@ -164,28 +127,55 @@ from pyspark.sql import SparkSession
 from datetime import datetime
 from delta import configure_spark_with_delta_pip
 
-SparkSession.builder.getOrCreate().stop()
+os.environ["HADOOP_USER_NAME"] = "hadoop"
 
+SPARK_DRIVER_PORT = 4050
+SPARK_BLOCK_MANAGER_PORT = 4051
+SPARK_JOB_ARCHIVE = MODULE_DIR / "mount" / JUPYTER_LAB_NAME / "spark_job_env.tar.gz"
+SPARK_JOB_ARCHIVE_URI = SPARK_JOB_ARCHIVE.resolve().as_uri()
+SPARK_ICEBERG_JAR_URI = (
+    MODULE_DIR / "jars" / "iceberg-spark-runtime-3.5_2.12-1.6.1.jar"
+).resolve().as_uri()
+SPARK_ICEBERG_WAREHOUSE = (
+    f"file://{SPARK_SHARED_WORKSPACE_DIR}/iceberg-warehouse"
+    if NETWORK_MODE == "docker"
+    else f"hdfs://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_PORT}/iceberg-warehouse"
+)
+assert SPARK_JOB_ARCHIVE.is_file(), SPARK_JOB_ARCHIVE
 builder = (
     SparkSession.builder.master(f"spark://{SPARK_MASTER_HOSTNAME}:{SPARK_MASTER_PORT}")
     .appName(f"SparkLab_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S.%f')}")
-    .config("spark.archives", f"{SPARK_WORKDIR}/spark_job_env.tar.gz#environment")
+    .config("spark.archives", f"{SPARK_JOB_ARCHIVE_URI}#environment")
     .config("spark.driver.host", f"{JUPYTER_LAB_HOSTNAME}")
     .config("spark.driver.bindAddress", "0.0.0.0")
+    .config("spark.driver.port", SPARK_DRIVER_PORT)
+    .config("spark.blockManager.port", SPARK_BLOCK_MANAGER_PORT)
     .config("spark.driver.memory", "512m")
+    .config(
+        "spark.jars",
+        SPARK_ICEBERG_JAR_URI,
+    )
     .config("spark.executorEnv.PYSPARK_PYTHON", "./environment/bin/python3")
     .config("spark.executor.memory", "1G")
     .config(
         "spark.executorEnv.PYTHONPATH",
         f"./environment/lib/python{'.'.join(str(n) for n in sys.version_info[:2])}/site-packages",
     )
-    .config("spark.sql.catalog.local.warehouse", os.path.abspath("iceberg-warehouse"))
+    .config(
+        "spark.sql.catalog.local.warehouse",
+        SPARK_ICEBERG_WAREHOUSE,
+    )
     .config("spark.sql.catalog.local", "org.apache.iceberg.spark.SparkCatalog")
     .config("spark.sql.catalog.local.type", "hadoop")
     .config("spark.sql.warehouse.dir", os.path.abspath("spark-warehouse"))
     .config(
         "spark.sql.extensions",
+        "io.delta.sql.DeltaSparkSessionExtension,"
         "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+    )
+    .config(
+        "spark.sql.catalog.spark_catalog",
+        "org.apache.spark.sql.delta.catalog.DeltaCatalog",
     )
     .enableHiveSupport()
 )
@@ -318,7 +308,9 @@ from pyspark.sql import functions as F
 # pdf_verify = pd.read_parquet(f"{SPARK_DATADIR}/faker_vectorized.parquet")
 # df_verify = spark.createDataFrame(pdf_verify).repartition(partitions)
 df_verify = spark.read.parquet(f"hdfs://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_PORT}/tmp/faker_vectorized.parquet").repartition(partitions)
-print(f"Generated rows: {df_verify.count()}")
+verified_rows = df_verify.count()
+assert verified_rows == total_rows, verified_rows
+print(f"Generated rows: {verified_rows}")
 
 print("\nFirst 10 by timestamp desc:")
 # df_verify.sort(F.col("timestamp").desc()).show(10)
@@ -343,6 +335,22 @@ df_sparkql = spark.sql("""
 """)
 display(df_sparkql.toPandas())
 
+# %% [markdown]
+# # Delta Lake and Iceberg validation
+
+# %%
+delta_path = f"hdfs://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_PORT}/tmp/delta-products"
+df_verify.limit(100).write.format("delta").mode("overwrite").save(delta_path)
+assert spark.read.format("delta").load(delta_path).count() == 100
+
+spark.sql("DROP TABLE IF EXISTS local.default.course_products")
+spark.sql(
+    "CREATE TABLE local.default.course_products "
+    "USING iceberg AS SELECT * FROM df_verify LIMIT 100"
+)
+assert spark.table("local.default.course_products").count() == 100
+print("✅ Delta Lake and Iceberg writes validated")
+
 # %%
 from IPython.display import Markdown, display
 
@@ -356,3 +364,5 @@ df_sparkql = spark.sql(f"""
     ORDER BY first_name_count DESC
 """)
 display(df_sparkql.toPandas())
+
+spark.stop()

@@ -9,58 +9,25 @@
 #   kernelspec:
 #     display_name: non-relational-dbs-labs
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
 # # Setup
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
+START_FROM_SCRATCH = False
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -87,26 +54,31 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-OPENSEARCH_START_FROM_SCRATCH = False
+OPENSEARCH_START_FROM_SCRATCH = START_FROM_SCRATCH
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
-VPN_HOST_IP = "10.15.20.2"
+DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
+HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 
 OPENSEARCH_DASHBOARD_PORT = 5601
 
 OPENSEARCH_CLUSTER_NAME = "opensearch-cluster.mavasbel.vpn.itam.mx"
 OPENSEARCH_TOTAL_NODES = 3
 
-OPENSEARCH_NODE_IPS = ["10.15.20.2"] * OPENSEARCH_TOTAL_NODES
 OPENSEARCH_NODE_NAMES = [
     f"opensearch-node-{i+1}" for i in range(OPENSEARCH_TOTAL_NODES)
+]
+OPENSEARCH_NODE_IPS = [
+    name if NETWORK_MODE == "docker" else VPN_HOST_IP
+    for name in OPENSEARCH_NODE_NAMES
 ]
 OPENSEARCH_NODE_REST_API_PORTS = [9200 + (i + 1) for i in range(OPENSEARCH_TOTAL_NODES)]
 OPENSEARCH_NODE_PERF_ANA_PORTS = [
     16280 + (i + 1) for i in range(OPENSEARCH_TOTAL_NODES)
 ]
 OPENSEARCH_NODE_HOSTNAMES = [
-    f"{OPENSEARCH_NODE_NAMES[j]}.mavasbel.vpn.itam.mx"
+    OPENSEARCH_NODE_NAMES[j]
+    if NETWORK_MODE == "docker"
+    else VPN_HOST_IP
     for j in range(OPENSEARCH_TOTAL_NODES)
 ]
 OPENSEARCH_NODE_HTTP_HOSTNAMES = [
@@ -125,7 +97,7 @@ OPENSEARCH_INITIAL_ADMIN_PASSWORD = "OpenSearchP455"
 import os
 from pathlib import Path
 
-LOCALHOST_WORKDIR = f"{os.path.join(os.path.relpath(Path.cwd()))}"
+LOCALHOST_WORKDIR = str(MODULE_DIR.resolve())
 DOCKER_MOUNTDIR = os.path.join(LOCALHOST_WORKDIR, "mount")
 
 mount_path = Path(DOCKER_MOUNTDIR)
@@ -135,18 +107,33 @@ mount_path.mkdir(parents=True, exist_ok=True)
 # # Stop opensearch-cluster.docker-compose.yml
 
 # %%
+import subprocess
+
 if OPENSEARCH_START_FROM_SCRATCH:
-    # !docker compose -f opensearch-cluster.docker-compose.yml down -v
+    subprocess.run(
+        ["docker", "compose", "-f", "opensearch-cluster.docker-compose.yml", "down", "-v"],
+        check=False,
+    )
 else:
     print("Preserving existing containers and volumes")
 
 
 # %%
-import shutil
+def clear_bind_directory(path):
+    target = Path(path).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "docker", "run", "--rm", "--mount",
+            f"type=bind,source={target},target=/target",
+            "busybox:1.36", "sh", "-c",
+            "find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +",
+        ],
+        check=True,
+    )
 
 if OPENSEARCH_START_FROM_SCRATCH:
-    shutil.rmtree(DOCKER_MOUNTDIR, ignore_errors=True)
-    Path(DOCKER_MOUNTDIR).mkdir(parents=True, exist_ok=True)
+    clear_bind_directory(DOCKER_MOUNTDIR)
 
 # %% [markdown]
 # # Start opensearch-cluster.docker-compose.yml
@@ -164,8 +151,11 @@ node_max_heap = "1G"
 opensearch_compose_dict = {
     "name": "opensearch-cluster",
     "services": {},
-    "networks": {"opensearch-cluster": {"driver": "bridge"}},
+    "networks": {
+        "opensearch-cluster": {"name": "opensearch-network", "driver": "bridge"}
+    },
 }
+opensearch_hosts_json = '["' + '","'.join(OPENSEARCH_NODE_HTTP_HOSTNAMES) + '"]'
 
 for i in range(OPENSEARCH_TOTAL_NODES):
 
@@ -199,21 +189,21 @@ https-enabled = false
             "bootstrap.memory_lock=true",
             f"OPENSEARCH_JAVA_OPTS=-Xms{node_start_heap} -Xmx{node_max_heap}",
             f"OPENSEARCH_INITIAL_ADMIN_PASSWORD={OPENSEARCH_INITIAL_ADMIN_PASSWORD}",
-            f'OPENSEARCH_HOSTS=["{'","'.join(OPENSEARCH_NODE_HTTP_HOSTNAMES)}"]',
+            f"OPENSEARCH_HOSTS={opensearch_hosts_json}",
         ],
         "ulimits": {
             "memlock": {"soft": -1, "hard": -1},
             "nofile": {"soft": 65536, "hard": 65536},
         },
         "volumes": [
-            f"{os.path.join(node_mount_dir, "data")}:{OPENSEARCH_WORKDIR}",
-            f"{os.path.join(node_mount_dir, "performance-analyzer.properties")}:/usr/share/opensearch/config/opensearch-performance-analyzer/performance-analyzer.properties",
+            f"{os.path.join(node_mount_dir, 'data')}:{OPENSEARCH_WORKDIR}",
+            f"{os.path.join(node_mount_dir, 'performance-analyzer.properties')}:/usr/share/opensearch/config/opensearch-performance-analyzer/performance-analyzer.properties",
         ],
         "networks": ["opensearch-cluster"],
         "hostname": OPENSEARCH_NODE_HOSTNAMES[i],
         "ports": [
-            f"{VPN_HOST_IP}:{OPENSEARCH_NODE_REST_API_PORTS[i]}:{OPENSEARCH_NODE_REST_API_PORTS[i]}",
-            f"{VPN_HOST_IP}:{OPENSEARCH_NODE_PERF_ANA_PORTS[i]}:{OPENSEARCH_NODE_PERF_ANA_PORTS[i]}",
+            f"{HOST_BIND_IP}:{OPENSEARCH_NODE_REST_API_PORTS[i]}:{OPENSEARCH_NODE_REST_API_PORTS[i]}",
+            f"{HOST_BIND_IP}:{OPENSEARCH_NODE_PERF_ANA_PORTS[i]}:{OPENSEARCH_NODE_PERF_ANA_PORTS[i]}",
         ],
         "extra_hosts": [
             f"{DOCKER_INTERNAL_HOST}:host-gateway",
@@ -227,7 +217,7 @@ https-enabled = false
         "healthcheck": {
             "test": [
                 "CMD-SHELL",
-                f"curl -s -k -u admin:${{OPENSEARCH_INITIAL_ADMIN_PASSWORD}} "
+                f"curl -sf -k -u admin:{OPENSEARCH_INITIAL_ADMIN_PASSWORD} "
                 f'https://localhost:{OPENSEARCH_NODE_REST_API_PORTS[i]}/_cluster/health | grep -qv \'"status":"red"\'',
             ],
             "interval": "10s",
@@ -241,12 +231,12 @@ opensearch_compose_dict["services"]["opensearch-dashboards"] = {
     "image": "opensearchproject/opensearch-dashboards:3.4.0",
     "container_name": "opensearch-dashboards",
     "environment": [
-        f'OPENSEARCH_HOSTS=["{'","'.join(OPENSEARCH_NODE_HTTP_HOSTNAMES)}"]',
+        f"OPENSEARCH_HOSTS={opensearch_hosts_json}",
         f"OPENSEARCH_JAVA_OPTS=-Xms{node_start_heap} -Xmx{node_max_heap}",
     ],
     "networks": ["opensearch-cluster"],
     "ports": [
-        f"{VPN_HOST_IP}:{OPENSEARCH_DASHBOARD_PORT}:{OPENSEARCH_DASHBOARD_PORT}",
+        f"{HOST_BIND_IP}:{OPENSEARCH_DASHBOARD_PORT}:{OPENSEARCH_DASHBOARD_PORT}",
     ],
     "dns": DOCKER_DNS,
     "deploy": {"resources": {"limits": {"cpus": node_cpus, "memory": node_memory}}},

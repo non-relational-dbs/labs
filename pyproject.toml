@@ -3,7 +3,7 @@ name = "non-relational-dbs-labs"
 version = "0.1.0"
 description = "non-relational-dbs-labs"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.10,<3.11"
 dependencies = [
     "cassandra-driver>=3.29.3",
     "delta-spark==3.2.0",
@@ -14,9 +14,11 @@ dependencies = [
     "ipython-sql>=0.5.0",
     "ipywidgets>=8.1.8",
     "jupytext==1.19.5",
+    "jupyterlab==4.6.3",
     "mimesis>=18.0.0",
     "neo4j>=6.0.3",
     "neo4j-driver>=5.28.2",
+    "notebook==7.6.2",
     "openpyxl>=3.1.5",
     "opensearch-py==3.0.0",
     "pandas>=2.3.3",
@@ -33,6 +35,7 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "pyyaml>=6.0.3",
     "redis>=7.1.0",
+    "requests==2.32.5",
     "sparkmagic>=0.23.0",
     "sqlalchemy>=2.0.45",
     "thrift>=0.22.0",

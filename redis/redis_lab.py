@@ -9,58 +9,24 @@
 #   kernelspec:
 #     display_name: non-relational-dbs-labs
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
 # # Setup
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -87,18 +53,17 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-REDIS_START_FROM_SCRATCH = False
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
 
 REDIS_TOTAL_NODES = 6
-REDIS_NODE_IPS = ["10.15.20.2"] * REDIS_TOTAL_NODES
 REDIS_NODE_NAMES = [f"redis-node-{i+1}" for i in range(REDIS_TOTAL_NODES)]
 REDIS_NODE_HOSTNAMES = [
-    f"{REDIS_NODE_NAMES[i]}.mavasbel.vpn.itam.mx" for i in range(REDIS_TOTAL_NODES)
+    REDIS_NODE_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
+    for i in range(REDIS_TOTAL_NODES)
 ]
-REDIS_NODE_PORTS = [f"{6380 + i + 1}" for i in range(REDIS_TOTAL_NODES)]
-REDIS_NODE_BUS_PORTS = [f"{16380 + i + 1}" for i in range(REDIS_TOTAL_NODES)]
+REDIS_NODE_IPS = REDIS_NODE_HOSTNAMES
+REDIS_NODE_PORTS = [6380 + i + 1 for i in range(REDIS_TOTAL_NODES)]
+REDIS_NODE_BUS_PORTS = [16380 + i + 1 for i in range(REDIS_TOTAL_NODES)]
 
 REDIS_WORKDIR = "/data"
 
@@ -124,34 +89,44 @@ mount_path.mkdir(parents=True, exist_ok=True)
 import pprint
 from redis.cluster import RedisCluster, ClusterNode
 from redis.cluster import LoadBalancingStrategy
+from redis import Redis
 
 redis_nodes = [
     ClusterNode(f"{REDIS_NODE_HOSTNAMES[i]}", REDIS_NODE_PORTS[i])
     for i in range(0, REDIS_TOTAL_NODES)
 ]
 pprint.pprint(f"🔗 Connecting to: {redis_nodes}")
+redis_endpoints = ",".join(f"{node.host}:{node.port}" for node in redis_nodes)
 print(
-    f"🔗 Connection String: redis://{REDIS_INIT_USER}:{REDIS_INIT_PASSWORD}:{','.join([f"{node.host}:{node.port}" for node in redis_nodes])}"
+    f"🔗 Connection String: redis://{REDIS_INIT_USER}:{REDIS_INIT_PASSWORD}:{redis_endpoints}"
 )
 
-try:
-    redis_cluster = RedisCluster(
-        startup_nodes=redis_nodes,
-        username=REDIS_INIT_USER,
-        password=REDIS_INIT_PASSWORD,
-        decode_responses=True,  # decode_responses=True converts bytes to strings automatically
-        load_balancing_strategy=LoadBalancingStrategy.RANDOM_REPLICA,
-        searedis_clusterh_all_nodes=True,
-        require_full_coverage=False,
-    )
-    cluster_status = redis_cluster.cluster_info()["cluster_state"]
-    nodes_count = len(redis_cluster.get_nodes())
-    state_icon = "🟢" if cluster_status == "ok" else "🔴"
-    print("✅ Cluster connected")
-    print(f"{state_icon} Cluster State: {cluster_status.upper()}")
-    print(f"🌐 Nodes Discovered: {nodes_count}")
-except Exception as e:
-    print(f"Connection failed: {e}")
+redis_cluster = RedisCluster(
+    startup_nodes=redis_nodes,
+    username=REDIS_INIT_USER,
+    password=REDIS_INIT_PASSWORD,
+    decode_responses=True,
+    load_balancing_strategy=LoadBalancingStrategy.RANDOM_REPLICA,
+    require_full_coverage=True,
+)
+cluster_details = redis_cluster.cluster_info()
+cluster_status = cluster_details["cluster_state"]
+cluster_nodes = Redis(
+    host=redis_nodes[0].host,
+    port=redis_nodes[0].port,
+    username=REDIS_INIT_USER,
+    password=REDIS_INIT_PASSWORD,
+    decode_responses=True,
+).execute_command("CLUSTER NODES")
+nodes_count = len(cluster_nodes)
+primaries = list(redis_cluster.get_primaries())
+assert cluster_status == "ok", cluster_details
+assert int(cluster_details["cluster_slots_assigned"]) == 16384, cluster_details
+assert nodes_count == REDIS_TOTAL_NODES, nodes_count
+assert len(primaries) == 3, primaries
+print("✅ Cluster connected")
+print(f"🟢 Cluster State: {cluster_status.upper()}")
+print(f"🌐 Nodes Discovered: {nodes_count}; primaries={len(primaries)}")
 
 # %%
 import pandas as pd
@@ -260,6 +235,8 @@ for node in redis_cluster.get_primaries():
         decode_responses=True,
     )
     redis.flushall()
+
+redis_cluster.close()
 
 # %%
 # import time

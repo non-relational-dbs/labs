@@ -9,58 +9,25 @@
 #   kernelspec:
 #     display_name: .venv
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
 # # Setup
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
+START_FROM_SCRATCH = False
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -87,19 +54,19 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-MONGODB_START_FROM_SCRATCH = False
+MONGODB_START_FROM_SCRATCH = START_FROM_SCRATCH
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
-VPN_HOST_IP = "10.15.20.2"
+DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
+HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
+BOOTSTRAP_HOST = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 
 MONGODB_NODES_DOMAIN = "mavasbel.vpn.itam.mx"
 MONGODB_REPLICA_SET = "replica_set_0"
 MONGODB_TOTAL_NODES = 3
 
-# MONGODB_NODE_IPS = ["10.15.20.2"] * MONGODB_TOTAL_NODES
 MONGODB_NODE_NAMES = [f"mongodb-node-{i + 1}" for i in range(MONGODB_TOTAL_NODES)]
 MONGODB_NODE_HOSTNAMES = [
-    f"{MONGODB_NODE_NAMES[i]}.{MONGODB_NODES_DOMAIN}"
+    MONGODB_NODE_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
     for i in range(MONGODB_TOTAL_NODES)
 ]
 MONGODB_NODE_PORTS = [27010 + (i + 1) for i in range(0, MONGODB_TOTAL_NODES)]
@@ -114,7 +81,7 @@ MONGO_INITDB_DATABASE = "admin"
 import os
 from pathlib import Path
 
-LOCALHOST_WORKDIR = f"{os.path.join(os.path.relpath(Path.cwd()))}"
+LOCALHOST_WORKDIR = str(MODULE_DIR.resolve())
 DOCKER_MOUNTDIR = os.path.join(LOCALHOST_WORKDIR, "mount")
 MONGODB_LOCAL_CLUSTER_KEY_PATH = os.path.join(DOCKER_MOUNTDIR, "mongo-keyfile")
 
@@ -125,8 +92,13 @@ mount_path.mkdir(parents=True, exist_ok=True)
 # # Stop mongodb-cluster.docker-compose.yml
 
 # %%
+import subprocess
+
 if MONGODB_START_FROM_SCRATCH:
-    # !docker compose -f mongodb-cluster.docker-compose.yml down -v
+    subprocess.run(
+        ["docker", "compose", "-f", "mongodb-cluster.docker-compose.yml", "down", "-v"],
+        check=False,
+    )
 else:
     print("Preserving existing containers and volumes")
 
@@ -135,12 +107,29 @@ else:
 import shutil
 import stat
 
+def clear_bind_directory(path):
+    target = Path(path).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--mount",
+            f"type=bind,source={target},target=/target",
+            "mongo:7.0",
+            "bash",
+            "-c",
+            "find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +",
+        ],
+        check=True,
+    )
+
 if MONGODB_START_FROM_SCRATCH:
     if os.path.exists(MONGODB_LOCAL_CLUSTER_KEY_PATH):
         os.chmod(MONGODB_LOCAL_CLUSTER_KEY_PATH, stat.S_IWRITE)
         os.remove(MONGODB_LOCAL_CLUSTER_KEY_PATH)
-    shutil.rmtree(DOCKER_MOUNTDIR)
-    os.makedirs(DOCKER_MOUNTDIR, exist_ok=True)
+    clear_bind_directory(DOCKER_MOUNTDIR)
 
 # %% [markdown]
 # # Start mongodb-cluster.docker-compose.yml
@@ -161,7 +150,7 @@ if not os.path.exists(MONGODB_LOCAL_CLUSTER_KEY_PATH):
 mongodb_compose_dict = {
     "name": "mongodb-cluster",
     "services": {},
-    "networks": {"mongo-cluster": {"driver": "bridge"}},
+    "networks": {"mongodb-network": {"external": True, "name": "mongodb-network"}},
 }
 
 for i in range(MONGODB_TOTAL_NODES):
@@ -202,9 +191,9 @@ for i in range(MONGODB_TOTAL_NODES):
             f"{os.path.join(DOCKER_MOUNTDIR, MONGODB_NODE_NAMES[i])}:/data/db",
             f"{os.path.join(DOCKER_MOUNTDIR, 'mongo-keyfile')}:/data/configdb/keyfile",
         ],
-        "networks": ["mongo-cluster"],
+        "networks": ["mongodb-network"],
         "ports": [
-            f"{VPN_HOST_IP}:{MONGODB_NODE_PORTS[i]}:{MONGODB_NODE_PORTS[i]}"
+            f"{HOST_BIND_IP}:{MONGODB_NODE_PORTS[i]}:{MONGODB_NODE_PORTS[i]}"
         ],
         "extra_hosts": [f"{DOCKER_INTERNAL_HOST}:host-gateway"],
         # + [
@@ -268,7 +257,7 @@ MONGODB_PRIMARY_SELECTION_TIMEOUT_SECONDS = 30
 client_options = {"directConnection": True, "serverSelectionTimeoutMS": 5000}
 
 init_client = MongoClient(
-    f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}@{MONGODB_NODE_HOSTNAMES[0]}:{MONGODB_NODE_PORTS[0]}/",
+    f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}@{BOOTSTRAP_HOST}:{MONGODB_NODE_PORTS[0]}/",
     **client_options,
 )
 try:
@@ -300,7 +289,7 @@ while time.time() - start_time < MONGODB_PRIMARY_SELECTION_TIMEOUT_SECONDS:
     for i in range(MONGODB_TOTAL_NODES):
         try:
             with MongoClient(
-                f"mongodb://{MONGODB_NODE_HOSTNAMES[i]}:{MONGODB_NODE_PORTS[i]}/",
+                f"mongodb://{BOOTSTRAP_HOST}:{MONGODB_NODE_PORTS[i]}/",
                 **client_options,
             ) as node_check:
                 res = node_check.admin.command("hello")

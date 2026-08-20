@@ -9,62 +9,30 @@
 #   kernelspec:
 #     display_name: .venv
 #     language: python
-#     name: python3
+#     name: non-relational-dbs-labs
 # ---
 
 # %% [markdown]
 # # Setup
 
 # %% tags=["parameters"]
-# Safe default: papermill validates structure without external side effects.
-DRY_RUN = False
+# Docker is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "docker"
+VPN_HOST_IP = "10.15.20.100"
+VPN_DNS_IP = "10.15.20.1"
+START_FROM_SCRATCH = False
 
 # %%
-# Universal papermill dry-run guard.
-if DRY_RUN:
-    try:
-        _dry_run_shell = get_ipython()
-    except NameError:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    if _dry_run_shell is None:
-        print("DRY RUN: no notebook side effects were executed")
-        raise SystemExit(0)
-
-    from IPython.core.interactiveshell import ExecutionInfo, ExecutionResult
-
-    async def _dry_run_cell_async(
-        raw_cell,
-        store_history=False,
-        silent=False,
-        shell_futures=True,
-        *,
-        transformed_cell=None,
-        preprocessing_exc_tuple=None,
-        cell_id=None,
-        cell_meta=None,
-    ):
-        print("DRY RUN: skipped executable cell")
-        info = ExecutionInfo(
-            raw_cell,
-            store_history,
-            silent,
-            shell_futures,
-            cell_id,
-            cell_meta,
-            transformed_cell,
-        )
-        return ExecutionResult(info)
-
-    _dry_run_shell.run_cell_async = _dry_run_cell_async
-    print("DRY RUN: notebook loaded; subsequent executable cells will be skipped")
-
-
+NETWORK_MODE = NETWORK_MODE.strip().lower()
+if NETWORK_MODE not in {"docker", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
+    raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
 
 # %%
 # Resolve module assets from the labs-setup root.
 import os
+import subprocess
 from pathlib import Path
 
 _start = Path.cwd().resolve()
@@ -87,20 +55,20 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-CASSANDRA_START_FROM_SCRATCH = False
+CASSANDRA_START_FROM_SCRATCH = START_FROM_SCRATCH
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-DOCKER_DNS = ["10.15.20.1"]
-VPN_HOST_IP = "10.15.20.2"
+DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
+HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 
-CASSANDRA_CLUSTER_NAME = "cassandra-cluster.mavasbel.vpn.itam.mx"
+CASSANDRA_CLUSTER_NAME = "cassandra-cluster"
 CASSANDRA_TOTAL_NODES = 3
 
-CASSANDRA_NODE_IPS = ["10.15.20.2"] * CASSANDRA_TOTAL_NODES
 CASSANDRA_NODE_NAMES = [f"cassandra-node-{i+1}" for i in range(CASSANDRA_TOTAL_NODES)]
 CASSANDRA_NODE_HOSTNAMES = [
-    f"{CASSANDRA_NODE_NAMES[i]}.mavasbel.vpn.itam.mx"
+    CASSANDRA_NODE_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
     for i in range(CASSANDRA_TOTAL_NODES)
 ]
+CASSANDRA_NODE_IPS = CASSANDRA_NODE_HOSTNAMES
 CASSANDRA_NODE_GOSSIP_PORTS = [7000 + (i + 1) for i in range(CASSANDRA_TOTAL_NODES)]
 CASSANDRA_NODE_RPC_PORTS = [9040 + (i + 1) for i in range(CASSANDRA_TOTAL_NODES)]
 CASSANDRA_NODE_SSL_GOSSIP_PORTS = [7500 + (i + 1) for i in range(CASSANDRA_TOTAL_NODES)]
@@ -117,7 +85,7 @@ CASSANDRA_WORKDIR = "/var/lib/cassandra"
 import os
 from pathlib import Path
 
-LOCALHOST_WORKDIR = f"{os.path.join(os.path.relpath(Path.cwd()))}"
+LOCALHOST_WORKDIR = str(MODULE_DIR.resolve())
 DOCKER_MOUNTDIR = os.path.join(LOCALHOST_WORKDIR, "mount")
 CASSANDRA_LOCALHOST_CLUSTER_CA_CERTDIR = os.path.join(LOCALHOST_WORKDIR, "cluster_certs")
 
@@ -129,7 +97,10 @@ mount_path.mkdir(parents=True, exist_ok=True)
 
 # %%
 if CASSANDRA_START_FROM_SCRATCH:
-    # !docker compose -f cassandra-cluster.docker-compose.yml down -v
+    subprocess.run(
+        ["docker", "compose", "-f", "cassandra-cluster.docker-compose.yml", "down", "-v"],
+        check=False,
+    )
 else:
     print("Preserving existing containers and volumes")
 
@@ -149,7 +120,10 @@ if CASSANDRA_START_FROM_SCRATCH:
 # ### Create cluster CA certificate
 
 # %%
-if not os.path.exists(CASSANDRA_LOCALHOST_CLUSTER_CA_CERTDIR):
+ca_keystore_path = os.path.join(
+    CASSANDRA_LOCALHOST_CLUSTER_CA_CERTDIR, "ca.keystore"
+)
+if not os.path.isfile(ca_keystore_path):
     Path(CASSANDRA_LOCALHOST_CLUSTER_CA_CERTDIR).mkdir(
         parents=True, exist_ok=True
     )
@@ -162,11 +136,23 @@ if not os.path.exists(CASSANDRA_LOCALHOST_CLUSTER_CA_CERTDIR):
             # 2. Export CA cert
             f"keytool -export -alias ca-{CASSANDRA_CLUSTER_NAME} -file /certs/ca.crt "
             f"-keystore /certs/ca.keystore -storepass {CASSANDRA_CA_CERT_PASSWORD}",
-            # 3. Save private key
-            f"openssl pkcs12 -in /certs/ca.keystore -nodes -nocerts -out /certs/ca.key -passin pass:{CASSANDRA_CA_CERT_PASSWORD}",
         ]
     )
-    # result = !docker run --rm --mount type=bind,source="{CASSANDRA_LOCALHOST_CLUSTER_CA_CERTDIR}",target=/certs cassandra:5.0 bash -c "{ca_cert_gen_command}"
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--mount",
+            f"type=bind,source={CASSANDRA_LOCALHOST_CLUSTER_CA_CERTDIR},target=/certs",
+            "cassandra:5.0",
+            "bash",
+            "-c",
+            ca_cert_gen_command,
+        ],
+        check=True,
+    )
+    assert os.path.isfile(ca_keystore_path), ca_keystore_path
     print("✅ Cassandra cluster CA certificate generated")
 
 # %% [markdown]
@@ -248,7 +234,8 @@ for i in range(0, CASSANDRA_TOTAL_NODES):
         )
 
     node_certdir = os.path.join(DOCKER_MOUNTDIR, CASSANDRA_NODE_NAMES[i], "certs")
-    if not os.path.exists(node_certdir):
+    node_keystore_path = os.path.join(node_certdir, "keystore.jks")
+    if not os.path.isfile(node_keystore_path):
         Path(node_certdir).mkdir(parents=True, exist_ok=True)
         node_cmd = " && ".join(
             [
@@ -275,7 +262,24 @@ for i in range(0, CASSANDRA_TOTAL_NODES):
                 # f"openssl pkcs12 -in /certs/keystore.jks -nodes -nocerts -out /certs/{CASSANDRA_NODE_NAMES[i]}.key -passin pass:{CASSANDRA_NODE_CERT_PASSWORD}",
             ]
         )
-        # !docker run --rm --mount type=bind,source="{node_certdir}",target=/certs --mount type=bind,source="{CASSANDRA_LOCALHOST_CLUSTER_CA_CERTDIR}",target=/cacerts,readonly --entrypoint bash cassandra:5.0 -c "{node_cmd}"
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--mount",
+                f"type=bind,source={node_certdir},target=/certs",
+                "--mount",
+                f"type=bind,source={CASSANDRA_LOCALHOST_CLUSTER_CA_CERTDIR},target=/cacerts,readonly",
+                "--entrypoint",
+                "bash",
+                "cassandra:5.0",
+                "-c",
+                node_cmd,
+            ],
+            check=True,
+        )
+        assert os.path.isfile(node_keystore_path), node_keystore_path
 
 # %% [markdown]
 # # Start cassandra-cluster.docker-compose.yml
@@ -296,8 +300,14 @@ with open(jmx_pass_path, "w") as f:
 cassandra_compose_dict = {
     "name": "cassandra-cluster",
     "services": {},
-    "networks": {"cassandra-cluster": {"driver": "bridge"}},
+    "networks": {
+        "cassandra-cluster": {"name": "cassandra-network", "driver": "bridge"}
+    },
 }
+cassandra_seeds = ",".join(
+    f"{CASSANDRA_NODE_IPS[j]}:{CASSANDRA_NODE_GOSSIP_PORTS[j]}"
+    for j in range(CASSANDRA_TOTAL_NODES)
+)
 
 for i in range(0, CASSANDRA_TOTAL_NODES):
 
@@ -324,7 +334,7 @@ for i in range(0, CASSANDRA_TOTAL_NODES):
             f"MAX_HEAP_SIZE={node_max_heap}",
             f"HEAP_NEWSIZE={node_start_heap}",
             f"CASSANDRA_CLUSTER_NAME={CASSANDRA_CLUSTER_NAME}",
-            f"CASSANDRA_SEEDS={','.join([f"{CASSANDRA_NODE_IPS[j]}:{CASSANDRA_NODE_GOSSIP_PORTS[j]}" for j in range(CASSANDRA_TOTAL_NODES)])}",
+            f"CASSANDRA_SEEDS={cassandra_seeds}",
             "CASSANDRA_LISTEN_ADDRESS=auto",
             "CASSANDRA_RPC_ADDRESS=0.0.0.0",  # Listen on all interfaces
             "CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch",
@@ -338,18 +348,18 @@ for i in range(0, CASSANDRA_TOTAL_NODES):
         ],
         "volumes": [
             f"{os.path.join(DOCKER_MOUNTDIR, CASSANDRA_NODE_NAMES[i])}:{CASSANDRA_WORKDIR}",
-            f"{os.path.join(DOCKER_MOUNTDIR, CASSANDRA_NODE_NAMES[i], "certs")}:/etc/cassandra/certs",
-            f"{os.path.join(DOCKER_MOUNTDIR, CASSANDRA_NODE_NAMES[i], "cassandra.yaml")}:/etc/cassandra/cassandra.yaml",
-            f"{os.path.join(DOCKER_MOUNTDIR, CASSANDRA_NODE_NAMES[i], "cassandra-rackdc.properties")}:/etc/cassandra/cassandra-rackdc.properties",
-            f"{os.path.join(DOCKER_MOUNTDIR, "jmxremote.password")}:/etc/cassandra/jmxremote.password",
+            f"{os.path.join(DOCKER_MOUNTDIR, CASSANDRA_NODE_NAMES[i], 'certs')}:/etc/cassandra/certs",
+            f"{os.path.join(DOCKER_MOUNTDIR, CASSANDRA_NODE_NAMES[i], 'cassandra.yaml')}:/etc/cassandra/cassandra.yaml",
+            f"{os.path.join(DOCKER_MOUNTDIR, CASSANDRA_NODE_NAMES[i], 'cassandra-rackdc.properties')}:/etc/cassandra/cassandra-rackdc.properties",
+            f"{os.path.join(DOCKER_MOUNTDIR, 'jmxremote.password')}:/etc/cassandra/jmxremote.password",
         ],
         "networks": ["cassandra-cluster"],
         # "hostname": f"{CASSANDRA_NODE_HOSTNAMES[i]}",
         "ports": [
-            f"{VPN_HOST_IP}:{CASSANDRA_NODE_RPC_PORTS[i]}:{CASSANDRA_NODE_RPC_PORTS[i]}",
-            f"{VPN_HOST_IP}:{CASSANDRA_NODE_GOSSIP_PORTS[i]}:{CASSANDRA_NODE_GOSSIP_PORTS[i]}",
-            f"{VPN_HOST_IP}:{CASSANDRA_NODE_SSL_GOSSIP_PORTS[i]}:{CASSANDRA_NODE_SSL_GOSSIP_PORTS[i]}",
-            f"{VPN_HOST_IP}:{CASSANDRA_NODE_JMX_PORTS[i]}:{CASSANDRA_NODE_JMX_PORTS[i]}",
+            f"{HOST_BIND_IP}:{CASSANDRA_NODE_RPC_PORTS[i]}:{CASSANDRA_NODE_RPC_PORTS[i]}",
+            f"{HOST_BIND_IP}:{CASSANDRA_NODE_GOSSIP_PORTS[i]}:{CASSANDRA_NODE_GOSSIP_PORTS[i]}",
+            f"{HOST_BIND_IP}:{CASSANDRA_NODE_SSL_GOSSIP_PORTS[i]}:{CASSANDRA_NODE_SSL_GOSSIP_PORTS[i]}",
+            f"{HOST_BIND_IP}:{CASSANDRA_NODE_JMX_PORTS[i]}:{CASSANDRA_NODE_JMX_PORTS[i]}",
         ],
         "extra_hosts": [
             f"{DOCKER_INTERNAL_HOST}:host-gateway",

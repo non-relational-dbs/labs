@@ -38,6 +38,9 @@ hadoop/data.csv
 hadoop/sales.csv
 
 # spark data
+spark/data/
+spark/derby.log
+spark/metastore_db/
 spark/vscode_server
 spark/mount/spark-master
 spark/mount/spark-warehouse
@@ -57,6 +60,7 @@ spark/mount/shared-workspace/derby.log
 
 # mongodb data
 mongodb/config/*
+mongodb/configsvr-mount/*
 mongodb/mount/*
 mongodb/mongo-keyfile
 
