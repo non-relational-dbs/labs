@@ -23,6 +23,9 @@ VPN_DNS_IP = "10.15.20.1"
 VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 
+# %% [markdown]
+# Validates the injected network parameters and derives `VPN_CLIENT_DOMAIN`: `NETWORK_MODE` must be lowercase `local` or `vpn`, VPN values must stay in the `10.15.20.*` subnet, and the client alias must be a valid single DNS label.
+
 # %%
 import re
 
@@ -40,6 +43,9 @@ if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
         "and must not start or end with a hyphen"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Locates the `labs-setup` project root by searching upward for the directory that contains both `pyproject.toml` and the lab module folders, then changes the working directory into the `redis` module so relative asset paths resolve consistently.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -64,6 +70,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "redis"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# Defines the six-node Redis cluster topology: container names, internal bridge IPs, mode-aware client hosts (`127.0.0.1` in local mode, `<container>.<VPN_CLIENT_DOMAIN>` in VPN mode), data/bus port ranges, and the shared credentials.
 
 # %%
 DOCKER_INTERNAL_HOST = "host.docker.internal"
@@ -90,6 +99,9 @@ REDIS_ADMIN_PASSWORD = "redis"
 REDIS_DEFAULT_PASSWORD = "redis"
 REDIS_INIT_USER = "redis"
 REDIS_INIT_PASSWORD = "redis"
+
+# %% [markdown]
+# Builds the host-side mount directory path and creates it on disk so the cluster nodes have a writable shared location for their data.
 
 # %%
 import os
@@ -164,6 +176,9 @@ print("✅ Cluster connected")
 print(f"🟢 Cluster State: {cluster_status.upper()}")
 print(f"🌐 Nodes Discovered: {nodes_count}; primaries={len(primaries)}")
 
+# %% [markdown]
+# Configures pandas and IPython display options so later DataFrames render with full rows, columns, and width in the notebook output.
+
 # %%
 import pandas as pd
 from IPython.display import display
@@ -175,6 +190,9 @@ pd.options.display.html.use_mathjax = True
 pd.options.display.html.border = 1
 pd.options.display.html.table_schema = False
 pd.options.display.expand_frame_repr = True
+
+# %% [markdown]
+# Opens a direct `Redis` connection to each of the six nodes, collects `CLUSTER INFO` and full node configuration from every one, and displays both as transposed DataFrames for side-by-side inspection.
 
 # %%
 from redis import Redis
@@ -196,6 +214,9 @@ for i in range(REDIS_TOTAL_NODES):
 display(pd.DataFrame(cluster_info).transpose())
 display(pd.DataFrame(config_get).transpose())
 
+# %% [markdown]
+# Runs `CLUSTER NODES` through the cluster client and renders the full topology (nodes, roles, slots, connection state) as a DataFrame table.
+
 # %%
 import pprint
 import pandas as pd
@@ -212,6 +233,9 @@ try:
     )
 except Exception as e:
     pprint.pprint(f"Error checking survivors: {e}")
+
+# %% [markdown]
+# Demonstrates cluster load distribution: resets command statistics on all nodes, performs 1000 `GET` reads over 10 keys through the cluster client, then reads each node's `commandstats` to show which primaries and replicas actually processed the requests.
 
 # %%
 import uuid
@@ -259,6 +283,9 @@ for node in redis_cluster.get_nodes():
     else:
         print(f"❌ Node {node.port} ({role.upper()}): 0 GETs handled")
 
+# %% [markdown]
+# Cleans up the lab data by flushing every key on all primary nodes, then closes the cluster client to release its connection pools.
+
 # %%
 # Flushes all in every primary node
 for node in redis_cluster.get_primaries():
@@ -273,6 +300,9 @@ for node in redis_cluster.get_primaries():
     redis.flushall()
 
 redis_cluster.close()
+
+# %% [markdown]
+# Optional (fully commented out) monitoring snippet: polls `CLUSTER NODES` every two seconds so you can kill the current master by hand and watch failover events appear in real time.
 
 # %%
 # import time
@@ -297,6 +327,9 @@ redis_cluster.close()
 #             print(f"⏰ {time.strftime('%H:%M:%S')} | Event Detected: {line}...")
 #             break
 #     time.sleep(2)
+
+# %% [markdown]
+# Optional (fully commented out) manual-failover snippet: connects to a replica and issues `CLUSTER FAILOVER TAKEOVER` to promote it to master, then re-initializes the cluster client's node view.
 
 # %%
 # from redis import Redis

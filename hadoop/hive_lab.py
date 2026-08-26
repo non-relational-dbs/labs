@@ -24,6 +24,9 @@ VPN_DNS_IP = "10.15.20.1"
 VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 
+# %% [markdown]
+# Validates and normalizes the injected parameters: lowercases NETWORK_MODE and VPN_CLIENT_ALIAS, rejects unsupported network modes and malformed aliases, and derives VPN_CLIENT_DOMAIN from them.
+
 # %%
 NETWORK_MODE = NETWORK_MODE.strip().lower()
 VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
@@ -42,6 +45,9 @@ if (
         "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, and internal hyphens"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Walks up the directory tree from the current working directory to locate the labs-setup root (identified by pyproject.toml plus the cassandra and mongodb module folders), then changes into the hadoop module directory.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -66,6 +72,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "hadoop"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# Declares the client-side Hive connection constants: PostgreSQL metastore credentials, container names and client hosts resolved per NETWORK_MODE for hive-metastore-db / hive-schema-init / hive-metastore / hive-server2, internal and external ports, warehouse paths, and image versions.
 
 # %%
 DOCKER_INTERNAL_HOST = "host.docker.internal"
@@ -157,6 +166,9 @@ with open(dataset_filename, "w", newline="") as f:
             ]
         )
 print(f"¡Dataset '{dataset_filename}' generado localmente con 50,000 filas!")
+
+# %% [markdown]
+# Uploads sales.csv into HDFS at the external table location under HIVE_DATADIR/lab_db/sales by copying it through the namenode container's temporary /tmp directory.
 
 # %%
 # Pasamos el archivo del host al contenedor del namenode temporalmente, y luego lo consagramos en HDFS
@@ -357,6 +369,9 @@ assert partitions == {"pais=CO", "pais=ES", "pais=MX", "pais=US"}, partitions
 
 # 5. Cerrar conexión
 connection.close()
+
+# %% [markdown]
+# Inspects the resulting HDFS layout with hdfs dfs -ls: the external sales data location and the sales_partitioned folders inside the Hive warehouse directory.
 
 # %%
 # Se guarda por defecto en el 'warehouse directory' configurado en {HIVE_DATADIR}

@@ -23,6 +23,9 @@ VPN_DNS_IP = "10.15.20.1"
 VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 
+# %% [markdown]
+# Validates the papermill-injected NETWORK_MODE and VPN_CLIENT_ALIAS values, accepting only lowercase local or vpn mode, and derives the student's VPN_CLIENT_DOMAIN for VPN addressing.
+
 # %%
 import re
 
@@ -40,6 +43,9 @@ if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
         "and must not start or end with a hyphen"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Locates the labs-setup project root by walking up from the current directory until a pyproject.toml with the cassandra and mongodb module directories is found, then changes into the neo4j module directory.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -65,6 +71,9 @@ MODULE_DIR = LABS_ROOT / "neo4j"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
+# %% [markdown]
+# Defines the Neo4j Bolt port 7687 and HTTP UI port 7474 plus the initial neo4j credentials used later to open the driver session.
+
 # %%
 # NEO4J_WORKDIR = "/var/lib/neo4j"
 NEO4J_PORT = 7687
@@ -72,6 +81,9 @@ NEO4J_WEBUI_PORT = 7474
 
 NEO4J_INIT_USER = "neo4j"
 NEO4J_INIT_PASSWORD = "password"
+
+# %% [markdown]
+# Creates the mount subdirectory in the current working directory to hold any bind-mounted container state.
 
 # %%
 import os
@@ -114,6 +126,9 @@ session = driver.session()
 from faker import Faker
 
 fake = Faker()
+
+# %% [markdown]
+# Generates 10 fake people with Faker and inserts them as :Person nodes via a Cypher UNWIND/MERGE transaction, then asserts the stored node count matches total_persons.
 
 # %%
 total_persons = 10

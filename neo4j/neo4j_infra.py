@@ -24,6 +24,9 @@ VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
+# %% [markdown]
+# Validates the papermill-injected NETWORK_MODE and VPN_CLIENT_ALIAS values, rejecting anything other than lowercase local or vpn mode, and derives the student's VPN_CLIENT_DOMAIN.
+
 # %%
 import re
 
@@ -41,6 +44,9 @@ if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
         "and must not start or end with a hyphen"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Locates the labs-setup project root by walking up from the current directory until a pyproject.toml with the cassandra and mongodb module directories is found, then changes into the neo4j module directory.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -65,6 +71,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "neo4j"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# Derives Neo4j deployment settings from the selected network mode: the neo4j-instance container name, Bolt port 7687, web UI port 7474, initial credentials, and the vpn_fqdn helper that builds VPN client identities.
 
 # %%
 NEO4J_START_FROM_SCRATCH = START_FROM_SCRATCH
@@ -91,6 +100,9 @@ NEO4J_WEBUI_PORT = 7474
 NEO4J_INIT_USER = "neo4j"
 NEO4J_INIT_PASSWORD = "password"
 
+# %% [markdown]
+# Creates the bind-mount base directory under the neo4j module folder where the container stores data, logs, plugins, and import files.
+
 # %%
 import os
 from pathlib import Path
@@ -115,6 +127,9 @@ if NEO4J_START_FROM_SCRATCH:
 else:
     print("Preserving existing containers and volumes")
 
+
+# %% [markdown]
+# Defines clear_bind_directory, which empties the bind-mount directory using a throwaway busybox container when START_FROM_SCRATCH is true.
 
 # %%
 def clear_bind_directory(path):
@@ -213,6 +228,9 @@ with open(neo4j_compose_yaml_path, "w") as f:
 
 print(f"Successfully created: '{os.path.relpath(neo4j_compose_yaml_path)}'")
 display(Markdown(f"```yaml\n{neo4j_compose_yaml_contents}\n```"))
+
+# %% [markdown]
+# Starts the generated neo4j.docker-compose.yml stack in detached mode and waits until the cypher-shell healthcheck reports the neo4j-instance container as healthy.
 
 # %%
 # !docker compose -f neo4j.docker-compose.yml up -d --wait

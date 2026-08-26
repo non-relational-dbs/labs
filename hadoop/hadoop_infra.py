@@ -25,6 +25,9 @@ VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
+# %% [markdown]
+# Validates and normalizes the injected parameters: lowercases NETWORK_MODE and VPN_CLIENT_ALIAS, rejects unsupported network modes and malformed aliases, and derives VPN_CLIENT_DOMAIN from them.
+
 # %%
 NETWORK_MODE = NETWORK_MODE.strip().lower()
 VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
@@ -43,6 +46,9 @@ if (
         "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, and internal hyphens"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Walks up the directory tree from the current working directory to locate the labs-setup root (identified by pyproject.toml plus the cassandra and mongodb module folders), then changes into the hadoop module directory.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -67,6 +73,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "hadoop"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# Defines the full Hadoop cluster topology: NameNode, ResourceManager, DataNode, and NodeManager hostnames, compose-network aliases, client IPs, RPC and Web UI ports, replication factor, worker counts, and HDFS storage directories for both local and VPN modes.
 
 # %%
 HADOOP_START_FROM_SCRATCH = START_FROM_SCRATCH
@@ -160,6 +169,9 @@ HADOOP_NAMENODE_NAMEDIR = "/opt/hadoop/dfs/name"
 HADOOP_DATANODE_DATADIR = "/opt/hadoop/dfs/data"
 
 HADOOP_HDFS_DATADIR = "/opt/hadoop/work-dir"
+
+# %% [markdown]
+# Creates the local bind-mount directory (DOCKER_MOUNTDIR) under the hadoop module folder that will hold persistent state for every Hadoop container.
 
 # %%
 import os

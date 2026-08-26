@@ -24,6 +24,9 @@ VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
+# %% [markdown]
+# This cell normalizes and validates the injected NETWORK_MODE and VPN_CLIENT_ALIAS parameters, rejecting unsupported modes, a VPN host outside the 10.15.20.* subnet, or malformed aliases, and derives VPN_CLIENT_DOMAIN.
+
 # %%
 import re
 
@@ -41,6 +44,9 @@ if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
         "and must not start or end with a hyphen"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# This cell walks up from the current directory to locate the labs-setup root (LABS_ROOT), resolves MODULE_DIR to its cassandra folder, and changes the working directory there so module assets resolve consistently.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -66,6 +72,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "cassandra"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# This cell derives the full cluster configuration: node names, per-node gossip/RPC/SSL/JMX ports, client and advertised hosts selected from NETWORK_MODE via vpn_fqdn, certificate passwords, and the initial cassandra/cassandra credentials.
 
 # %%
 CASSANDRA_START_FROM_SCRATCH = START_FROM_SCRATCH
@@ -103,6 +112,9 @@ CASSANDRA_INIT_PASSWORD = "cassandra"
 
 CASSANDRA_WORKDIR = "/var/lib/cassandra"
 
+# %% [markdown]
+# This cell computes the host-side LOCALHOST_WORKDIR, DOCKER_MOUNTDIR, and CASSANDRA_LOCALHOST_CLUSTER_CA_CERTDIR paths and creates the mount directory that will back the node volumes.
+
 # %%
 import os
 from pathlib import Path
@@ -126,6 +138,9 @@ if CASSANDRA_START_FROM_SCRATCH:
 else:
     print("Preserving existing containers and volumes")
 
+
+# %% [markdown]
+# When CASSANDRA_START_FROM_SCRATCH is true, this cell removes DOCKER_MOUNTDIR and the cluster CA certificate directory and recreates an empty mount directory; otherwise existing generated state is preserved.
 
 # %%
 import shutil
@@ -416,8 +431,14 @@ with open(cassandra_compose_yaml_path, "w") as f:
 print(f"Successfully created: '{os.path.relpath(cassandra_compose_yaml_path)}'")
 display(Markdown(f"```yaml\n{cassandra_compose_yaml_contents}\n```"))
 
+# %% [markdown]
+# This cell writes jmxremote.password and builds the complete cassandra_compose_dict — one service per node with JVM options, bind-mounted volumes, port bindings on HOST_BIND_IP, DNS settings, resource limits, and nodetool-based health checks — then serializes it to cassandra-cluster.docker-compose.yml with yaml.dump.
+
 # %%
 # !docker compose -f cassandra-cluster.docker-compose.yml up -d --wait
+
+# %% [markdown]
+# This cell collects commented-out diagnostic commands for opening cqlsh sessions on each node and running nodetool status, describecluster, and repair operations against the cluster.
 
 # %%
 # # !docker exec -it cassandra-node-1 env CQLSH_PORT=9041 cqlsh -u cassandra -p cassandra

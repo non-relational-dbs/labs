@@ -23,6 +23,9 @@ VPN_DNS_IP = "10.15.20.1"
 VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 
+# %% [markdown]
+# Validates the injected network parameters and derives `VPN_CLIENT_DOMAIN`: `NETWORK_MODE` must be lowercase `local` or `vpn`, VPN values must stay in the `10.15.20.*` subnet, and the client alias must be a valid single DNS label.
+
 # %%
 NETWORK_MODE = NETWORK_MODE.strip().lower()
 VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
@@ -41,6 +44,9 @@ if (
         "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, and internal hyphens"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Locates the `labs-setup` project root by searching upward for the directory that contains both `pyproject.toml` and the lab module folders, then changes the working directory into the `spark` module so relative asset paths resolve consistently.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -65,6 +71,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "spark"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# Declares the Spark cluster topology and mode-aware endpoints: image tags, master/worker names, client hosts (`127.0.0.1` in local mode, `*.VPN_CLIENT_DOMAIN` in VPN mode), Web UI ports, driver callback host (`host.docker.internal`, since executors run in Docker while this notebook driver runs on the host), executor environment paths, and the shared workspace mount.
 
 # %%
 DOCKER_INTERNAL_HOST = "host.docker.internal"
@@ -113,6 +122,9 @@ JUPYTER_LAB_TOKEN = ""
 SPARK_SHARED_WORKSPACE = "shared-workspace"
 SPARK_SHARED_WORKSPACE_DIR = f"/opt/spark/{SPARK_SHARED_WORKSPACE}"
 
+# %% [markdown]
+# Derives the mode-aware HDFS URI: local mode reaches the NameNode through the split-horizon name `namenode.lvh.me`, VPN mode through `namenode.<VPN_CLIENT_DOMAIN>`, both on RPC port 8020.
+
 # %%
 HADOOP_NAMENODE_HOSTNAME = "namenode"
 HADOOP_NAMENODE_PORT = 8020
@@ -122,6 +134,9 @@ SPARK_HDFS_HOST = (
     else f"{HADOOP_NAMENODE_HOSTNAME}.{VPN_CLIENT_DOMAIN}"
 )
 SPARK_HDFS_URI = f"hdfs://{SPARK_HDFS_HOST}:{HADOOP_NAMENODE_PORT}"
+
+# %% [markdown]
+# Creates the host-side shared workspace directory that is bind-mounted into the Spark containers and defines the `SPARK_DATADIR` HDFS path where the lab datasets will be written.
 
 # %%
 import os
@@ -283,6 +298,9 @@ df_column_types = spark.createDataFrame(
 ).schema
 print(f"✅ batch_generator schema: {df_column_types}")
 
+# %% [markdown]
+# Generates 10,000 rows distributed over 10 partitions with a Faker-based batch generator executed on the workers, writes them as CSV to HDFS, and displays per-worker/per-partition row counts to prove the work was truly distributed.
+
 # %%
 from pyspark.sql import functions as F
 from IPython.display import Markdown, display
@@ -303,6 +321,9 @@ partition_stats = (
 display(partition_stats.toPandas())
 
 
+# %% [markdown]
+# Regenerates the same dataset through the RDD API (`parallelize` + `mapPartitions`) and writes it as Parquet to HDFS, again displaying per-partition statistics for comparison with the DataFrame path.
+
 # %%
 from IPython.display import Markdown, display
 
@@ -321,6 +342,9 @@ partition_stats = (
 )
 # partition_stats.show()
 display(partition_stats.toPandas())
+
+# %% [markdown]
+# Demonstrates a vectorized pandas UDF: the generator runs as Arrow-batched Pandas DataFrames inside `spark.range`, producing the dataset in a third way, which is then written to Parquet under `/tmp` in HDFS with partition stats displayed.
 
 # %%
 from pyspark.sql import DataFrame
@@ -354,6 +378,9 @@ partition_stats = (
 # partition_stats.show()
 display(partition_stats.toPandas())
 
+# %% [markdown]
+# Reads the vectorized Parquet output back from HDFS, asserts the row count matches, and displays the 10 most recent records plus the 10 most frequent first names as verification tables.
+
 # %%
 from IPython.display import Markdown, display
 from pyspark.sql import functions as F
@@ -381,6 +408,9 @@ display(
     .limit(10)
     .toPandas()
 )
+
+# %% [markdown]
+# Registers the verified DataFrame as a temporary view and runs a Spark SQL aggregation computing total amount and record count per first name, ordered by frequency.
 
 # %%
 from IPython.display import Markdown, display
@@ -412,6 +442,9 @@ spark.sql(
 )
 assert spark.table("local.default.course_products").count() == 100
 print("✅ Delta Lake and Iceberg writes validated")
+
+# %% [markdown]
+# Queries the Parquet file directly with Spark SQL (no temporary view) using the same aggregation, then stops the Spark session to release the cluster.
 
 # %%
 from IPython.display import Markdown, display

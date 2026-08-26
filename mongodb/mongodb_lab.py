@@ -23,6 +23,9 @@ VPN_DNS_IP = "10.15.20.1"
 VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 
+# %% [markdown]
+# Validates and normalizes the papermill-injected network parameters, rejecting any NETWORK_MODE other than lowercase `local` or `vpn` or an invalid VPN_CLIENT_ALIAS, and composing VPN_CLIENT_DOMAIN for later hostname construction.
+
 # %%
 import re
 
@@ -40,6 +43,9 @@ if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
         "and must not start or end with a hyphen"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Locates the labs-setup project root by walking parent directories until it finds a `pyproject.toml` alongside the `cassandra` and `mongodb` folders, then changes the working directory to the mongodb module.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -65,6 +71,9 @@ MODULE_DIR = LABS_ROOT / "mongodb"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
+# %% [markdown]
+# Defines the lab's view of the running replica set: `MONGODB_REPLICA_SET` with three nodes, ports 27011 through 27013, client hosts resolved per NETWORK_MODE via `vpn_fqdn`, and the admin credentials used throughout the notebook.
+
 # %%
 DOCKER_INTERNAL_HOST = "host.docker.internal"
 
@@ -87,6 +96,9 @@ MONGODB_WORKDIR = "/data/db"
 MONGO_INITDB_ROOT_USERNAME = "admin"
 MONGO_INITDB_ROOT_PASSWORD = "admin"
 MONGO_INITDB_DATABASE = "admin"
+
+# %% [markdown]
+# Prepares the local `mount/` working directory relative to the current path and computes MONGODB_LOCAL_CLUSTER_KEY_PATH, mirroring the layout used by the infrastructure notebook.
 
 # %%
 import os
@@ -162,6 +174,9 @@ from faker import Faker
 
 fake = Faker()
 
+# %% [markdown]
+# Builds a batch of 10000 realistic user documents with Faker and random (nested profile, tags, login_count, last_login), inserts them into `users_collection` with `insert_many`, and asserts the resulting document count matches the batch size.
+
 # %%
 # # %%timeit -n 2 -r 2
 # -n 1: run only 2 loop
@@ -204,11 +219,17 @@ query = {"active": True, "login_count": {"$gt": 500}}
 results = users_collection.find(query)
 print(f"Found {users_collection.count_documents(query)} highly active users.")
 
+# %% [markdown]
+# Runs a projected `find` for documents tagged `work`, returning only name, email, and profile.job while excluding _id, limited to the first 100 matches.
+
 # %%
 projection = {"name": 1, "email": 1, "profile.job": 1, "_id": 0}
 cursor = users_collection.find({"tags": "work"}, projection).limit(100)
 for user in cursor:
     print(user)
+
+# %% [markdown]
+# Executes a five-stage MongoDB aggregation pipeline ($match, $group, $sort, $project, $limit) that averages `login_count` per `profile.job` and returns the top 100 professions by average logins.
 
 # %%
 pipeline = [
@@ -237,9 +258,15 @@ results = list(users_collection.aggregate(pipeline))
 for res in results:
     print(res)
 
+# %% [markdown]
+# Counts users located in the Northern Hemisphere by querying the nested `profile.location.lat` field for values greater than zero.
+
 # %%
 northern_users = users_collection.count_documents({"profile.location.lat": {"$gt": 0}})
 print(f"Users in Northern Hemisphere: {northern_users}")
+
+# %% [markdown]
+# Demonstrates collation-aware sorting: sorts user names ascending with locale `en` and strength 2 so ordering is case-insensitive rather than the default byte-wise Z-A-a-z order.
 
 # %%
 # Standard Sort (Z-A-a-z) vs. Collation Sort (A-a-B-b...)
@@ -276,6 +303,9 @@ print(f"Updated login count: {new_logins}")
 print(f"Change confirmed: {new_logins == initial_logins + 1}")
 assert new_logins == initial_logins + 1
 
+# %% [markdown]
+# Uses `find_one_and_update` with `ReturnDocument.AFTER` to increment login_count atomically while returning the updated document in a single round trip.
+
 # %%
 from pymongo import ReturnDocument
 
@@ -286,11 +316,17 @@ updated_doc = users_collection.find_one_and_update(
 
 print(f"New count from single-step operation: {updated_doc['login_count']}")
 
+# %% [markdown]
+# Performs a bulk `update_many` that flags every document whose profile.job matches the case-insensitive regex for engineer with is_technical set to true, reporting result.modified_count.
+
 # %%
 query = {"profile.job": {"$regex": ".*engineer.*", "$options": "i"}}
 update = {"$set": {"is_technical": True}}
 result = users_collection.update_many(query, update)
 print(f"Updated {result.modified_count} engineers.")
+
+# %% [markdown]
+# Deactivates the account with email example@user.com via `update_one`, setting active to false if that document exists.
 
 # %%
 query = {"email": "example@user.com"}
@@ -304,6 +340,9 @@ users_collection.update_one(query, new_values)
 delete_result = users_collection.delete_many({})
 assert delete_result.deleted_count == len(users_batch)
 print(f"Deleted {delete_result.deleted_count} documents.")
+
+# %% [markdown]
+# Removes the `users` collection entirely from `db`, complementing the earlier document-level `delete_many` with collection-level cleanup.
 
 # %%
 db.drop_collection(users_collection)
@@ -370,6 +409,9 @@ assert contains_stage(explain_find_idx["queryPlanner"]["winningPlan"], "IXSCAN")
 #         "Execution Millis": stats_idx.get("executionTimeMillis"),
 #     }
 # )
+
+# %% [markdown]
+# Shows the alternative explain form by wrapping a find on `estudiantes` in a database command with verbosity executionStats, printing the resulting executionStats, then dropping the universidad database and closing the client.
 
 # %%
 # Otra forma es definiendo un comando con explain que envuelve al find

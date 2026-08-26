@@ -24,6 +24,9 @@ VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
+# %% [markdown]
+# Validates the papermill-injected NETWORK_MODE and VPN_CLIENT_ALIAS values and derives VPN_CLIENT_DOMAIN as `<alias>.<VPN_DOMAIN>` for later VPN-mode host naming.
+
 # %%
 NETWORK_MODE = NETWORK_MODE.strip().lower()
 VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
@@ -42,6 +45,9 @@ if (
         "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, and internal hyphens"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Locates the labs-setup root by walking parent directories for a pyproject.toml alongside the cassandra and mongodb module folders, then changes into the spark module directory.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -66,6 +72,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "spark"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# Defines the Spark cluster naming and addressing: spark-master, three spark-worker containers, the spark-jupyter service with their Docker image tags, ports, per-mode compose/client hostnames via VPN_CLIENT_DOMAIN, and the shared-workspace path.
 
 # %%
 SPARK_START_FROM_SCRATCH = START_FROM_SCRATCH
@@ -129,6 +138,9 @@ JUPYTER_LAB_TOKEN = ""
 SPARK_SHARED_WORKSPACE = "shared-workspace"
 SPARK_SHARED_WORKSPACE_DIR = f"/opt/spark/{SPARK_SHARED_WORKSPACE}"
 
+# %% [markdown]
+# Creates the local bind mount directory (DOCKER_MOUNTDIR) that backs the Spark containers' persistent volumes.
+
 # %%
 import os
 from pathlib import Path
@@ -153,6 +165,9 @@ if SPARK_START_FROM_SCRATCH:
 else:
     print("Preserving existing containers and volumes")
 
+
+# %% [markdown]
+# Defines clear_bind_directory, which empties a bind mount through a throwaway busybox:1.36 container, and uses it to wipe the master, worker, and shared-workspace mounts when SPARK_START_FROM_SCRATCH is true.
 
 # %%
 def clear_bind_directory(path):
@@ -226,6 +241,9 @@ print(
 )
 display(Markdown(f"```dockerfile\n{dockerfile_spark_jupyter_contents}\n```"))
 
+# %% [markdown]
+# Builds the spark-jupyter image from dockerfile.spark-jupyter, tagging it as SPARK_JUPYTER_LAB_DOCKER_TAG.
+
 # %%
 # !docker build -t {SPARK_JUPYTER_LAB_DOCKER_TAG} -f dockerfile.spark-jupyter .
 
@@ -254,6 +272,9 @@ with open(os.path.join(LOCALHOST_WORKDIR, dockerfile_spark_job_venv_name), "w") 
 
 print(f"Successfully created: '{os.path.relpath(os.path.join(LOCALHOST_WORKDIR,dockerfile_spark_jupyter_name))}'")
 display(Markdown(f"```dockerfile\n{dockerfile_spark_job_venv_contents}\n```"))
+
+# %% [markdown]
+# Ensures the mount directory exists, then builds the spark-job-venv image, creates a throwaway container from it, copies the packed spark_job_env.tar.gz into the shared workspace, and removes the container.
 
 # %%
 from pathlib import Path
@@ -452,6 +473,9 @@ with open(spark_compose_yaml_path, "w") as spark_compose_yaml_file:
 
 print(f"Successfully created: '{os.path.relpath(spark_compose_yaml_path)}'")
 display(Markdown(f"```yaml\n{spark_compose_yaml_contents}\n```"))
+
+# %% [markdown]
+# Starts the full Spark cluster (spark-master, the three workers, and spark-jupyter) in detached mode with `docker compose up -d --wait`, blocking until every healthcheck passes.
 
 # %%
 # !docker compose -f spark-cluster.docker-compose.yml up -d --wait

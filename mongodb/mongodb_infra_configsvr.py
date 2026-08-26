@@ -27,6 +27,9 @@ VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
+# %% [markdown]
+# Validates and normalizes the papermill-injected network parameters, rejecting any NETWORK_MODE other than lowercase `local` or `vpn`, checking that VPN_HOST_IP belongs to the 10.15.20.* subnet, and composing VPN_CLIENT_DOMAIN from VPN_CLIENT_ALIAS and VPN_DOMAIN.
+
 # %%
 import re
 
@@ -44,6 +47,9 @@ if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
         "and must not start or end with a hyphen"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Locates the labs-setup project root by walking parent directories until it finds a `pyproject.toml` alongside the `cassandra` and `mongodb` folders, then changes the working directory to the mongodb module.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -68,6 +74,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "mongodb"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# Configures the three-node `config_rs` deployment: derives `config-server-1` through `config-server-3` names and ports starting from MONGODB_STARTING_PORT 27110, builds mode-dependent host lists via `vpn_fqdn`, and creates the external `mongodb-network` Docker network that Compose will reference.
 
 # %%
 MONGODB_START_FROM_SCRATCH = START_FROM_SCRATCH
@@ -133,6 +142,9 @@ if not network_exists:
         ["docker", "network", "create", "mongodb-network"], check=True
     )
 
+# %% [markdown]
+# Sets up host-side paths: `LOCALHOST_CONFIG_DIR` for the generated mongod.conf and bootstrap files, the `configsvr-mount` directory for container bind mounts, and `MONGODB_LOCAL_CLUSTER_KEY_PATH` for the shared mongo-keyfile.
+
 # %%
 import os
 from pathlib import Path
@@ -157,6 +169,9 @@ if MONGODB_START_FROM_SCRATCH:
 else:
     print("Preserving existing containers and volumes")
 
+
+# %% [markdown]
+# When START_FROM_SCRATCH is true, removes the shared mongo-keyfile and clears both LOCALHOST_CONFIG_DIR and LOCALHOST_MOUNTDIR through `clear_bind_directory`, which deletes contents via `rm -rf` inside a throwaway `mongo:8.2.3` container; otherwise existing state is left untouched.
 
 # %%
 import shutil
@@ -201,6 +216,9 @@ if not os.path.exists(MONGODB_LOCAL_CLUSTER_KEY_PATH):
     with open(MONGODB_LOCAL_CLUSTER_KEY_PATH, "w") as f:
         raw_data = secrets.token_bytes(756)
         f.write(base64.b64encode(raw_data).decode("utf-8"))
+
+# %% [markdown]
+# Generates a `mongod.conf` (configsvr clusterRole, replSetName `config_rs`, keyFile security) plus the two-phase `MONGO_BOOTSTRAP_SCRIPT` for each config server: Phase 1 starts a temporary standalone mongod to create the admin user, and Phase 2 execs the real mongod with sharding and replication enabled.
 
 # %%
 # --- Generate mongod.conf and mongod-bootstrap.sh for each config server ---
@@ -293,6 +311,9 @@ for i, node_name in enumerate(MONGODB_CONFIG_SVR_NAMES):
 
 print("✅ Configuration files generated in 'config/' directory.")
 
+# %% [markdown]
+# Copies each node's generated configuration into `configsvr-mount/<node>/config` and prepares its data directory, wiping stale copies first when MONGODB_START_FROM_SCRATCH is true.
+
 # %%
 # --- Copy config files into mount directories ---
 for node_name in MONGODB_CONFIG_SVR_NAMES:
@@ -310,6 +331,9 @@ for node_name in MONGODB_CONFIG_SVR_NAMES:
     shutil.copytree(src_config_dir, dest_config_dir, dirs_exist_ok=True)
 
 print("✅ Configuration copied to mount directories.")
+
+# %% [markdown]
+# Builds `mongodb-configsvr.docker-compose.yml` with one service per config server running the bootstrap script, mounting its data and config volumes onto the external `mongodb-network`, chaining `depends_on` startup order, and adding mongosh healthchecks with a generous start_period for the two-phase init.
 
 # %%
 # --- Generate Docker Compose file ---
@@ -386,6 +410,9 @@ display(
         f"```yaml\n{yaml.dump(configsvr_compose_dict, default_flow_style=False, sort_keys=False, indent=4)}\n```"
     )
 )
+
+# %% [markdown]
+# Starts the three config servers in detached mode and waits until every healthcheck reports healthy.
 
 # %%
 # !docker compose -f mongodb-configsvr.docker-compose.yml up -d --wait
@@ -464,6 +491,9 @@ except OperationFailure as e:
         )
     else:
         raise
+
+# %% [markdown]
+# Polls each member's `hello` command until a PRIMARY emerges within PRIMARY_ELECTION_TIMEOUT seconds, then asserts via `replSetGetStatus` that `config_rs` holds exactly one PRIMARY and two SECONDARY members.
 
 # %%
 import time

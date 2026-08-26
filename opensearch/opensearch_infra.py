@@ -24,6 +24,9 @@ VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
+# %% [markdown]
+# Validates the papermill-injected NETWORK_MODE and VPN_CLIENT_ALIAS values, rejecting anything other than lowercase local or vpn mode, and derives the student's VPN_CLIENT_DOMAIN.
+
 # %%
 import re
 
@@ -41,6 +44,9 @@ if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
         "and must not start or end with a hyphen"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Locates the labs-setup project root by walking up from the current directory until a pyproject.toml with the cassandra and mongodb module directories is found, then changes into the opensearch module directory.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -65,6 +71,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "opensearch"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# Builds the cluster topology settings: three opensearch-node containers, their REST and performance-analyzer ports, local hostnames or VPN FQDNs, the Dashboards service name, and the initial admin password.
 
 # %%
 OPENSEARCH_START_FROM_SCRATCH = START_FROM_SCRATCH
@@ -112,6 +121,9 @@ OPENSEARCH_INITIAL_ADMIN_PASSWORD = "OpenSearchP455"
 # OPENSEARCH_INIT_USER = "opensearch"
 # OPENSEARCH_INIT_PASSWORD = "opensearch"
 
+# %% [markdown]
+# Creates the bind-mount base directory under the opensearch module folder that will hold the per-node data volumes.
+
 # %%
 import os
 from pathlib import Path
@@ -136,6 +148,9 @@ if OPENSEARCH_START_FROM_SCRATCH:
 else:
     print("Preserving existing containers and volumes")
 
+
+# %% [markdown]
+# Defines clear_bind_directory, which empties the bind-mount directory using a throwaway busybox container when START_FROM_SCRATCH is enabled.
 
 # %%
 def clear_bind_directory(path):
@@ -280,6 +295,9 @@ with open(opensearch_compose_yaml_path, "w") as f:
 
 print(f"Successfully created: '{os.path.relpath(opensearch_compose_yaml_path)}'")
 display(Markdown(f"```yaml\n{opensearch_compose_yaml_contents}\n```"))
+
+# %% [markdown]
+# Starts the generated opensearch-cluster.docker-compose.yml stack in detached mode and waits until every node's _cluster/health healthcheck and Dashboards become healthy.
 
 # %%
 # !docker compose -f opensearch-cluster.docker-compose.yml up -d --wait

@@ -23,6 +23,9 @@ VPN_DNS_IP = "10.15.20.1"
 VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 
+# %% [markdown]
+# This cell normalizes and validates the injected NETWORK_MODE and VPN_CLIENT_ALIAS parameters, rejecting unsupported modes, a VPN host outside the 10.15.20.* subnet, or malformed aliases, and derives VPN_CLIENT_DOMAIN.
+
 # %%
 import re
 
@@ -40,6 +43,9 @@ if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
         "and must not start or end with a hyphen"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# This cell walks up from the current directory to locate the labs-setup root (LABS_ROOT), resolves MODULE_DIR to its cassandra folder, and changes the working directory there so module assets resolve consistently.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -64,6 +70,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "cassandra"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# This cell defines the lab-side cluster constants: node names, per-node RPC/gossip/SSL/JMX ports, client hosts selected from NETWORK_MODE through vpn_fqdn, certificate passwords, and the initial cassandra/cassandra credentials.
 
 # %%
 CASSANDRA_START_FROM_SCRATCH = False
@@ -92,6 +101,9 @@ CASSANDRA_INIT_USER = "cassandra"
 CASSANDRA_INIT_PASSWORD = "cassandra"
 
 CASSANDRA_WORKDIR = "/var/lib/cassandra"
+
+# %% [markdown]
+# This cell computes LOCALHOST_WORKDIR, DOCKER_MOUNTDIR, and CASSANDRA_LOCALHOST_CLUSTER_CA_CERTDIR relative to the current directory, creates the mount directory, and enables CQLENG_ALLOW_SCHEMA_MANAGEMENT for later schema changes.
 
 # %%
 import os
@@ -164,6 +176,9 @@ expected_endpoints = set(zip(CASSANDRA_NODE_CLIENT_HOSTS, CASSANDRA_NODE_RPC_POR
 assert discovered_endpoints == expected_endpoints, discovered_endpoints
 assert all(host.is_up for host in cluster.metadata.all_hosts())
 
+# %% [markdown]
+# This cell configures pandas display options and renders a DataFrame summarizing every host known to the cluster from cluster.metadata.all_hosts().
+
 # %%
 import pprint
 import pandas as pd
@@ -185,6 +200,9 @@ display(
     .transpose()
 )
 
+# %% [markdown]
+# This cell keeps commented-out exploratory queries against system.peers_v2 and system.local for inspecting the cluster topology directly.
+
 # %%
 # from cassandra.cluster import ResultSet
 
@@ -205,6 +223,9 @@ display(
 keyspace_name = "generic_analytics"
 if CASSANDRA_START_FROM_SCRATCH:
     session.execute(f"DROP KEYSPACE IF EXISTS {keyspace_name}")
+
+# %% [markdown]
+# This cell creates the generic_analytics keyspace with NetworkTopologyStrategy replication across all nodes, sets it as the session default, and creates the user_metrics table partitioned by city with user_id as the clustering column.
 
 # %%
 keyspace_name = "generic_analytics"
@@ -242,6 +263,9 @@ CREATE TABLE IF NOT EXISTS user_metrics (
 from faker import Faker
 
 fake = Faker()
+
+# %% [markdown]
+# This cell prepares an INSERT statement with session.prepare, fills a LOGGED BatchStatement at QUORUM consistency with 200 Faker-generated user_metrics records, and executes the batch atomically.
 
 # %%
 import uuid
@@ -295,12 +319,18 @@ row_count = next(iter(count_row.values()))
 assert row_count >= batch_records, row_count
 print(f"Rows stored: {row_count}")
 
+# %% [markdown]
+# This cell runs SELECT * FROM user_metrics LIMIT 100 and prints each row returned in the ResultSet.
+
 # %%
 from cassandra.cluster import ResultSet
 
 rows: ResultSet = session.execute("SELECT * FROM user_metrics LIMIT 100")
 for row in rows.current_rows:
     print(row)
+
+# %% [markdown]
+# This cell queries DISTINCT city values from user_metrics to show how the partition key distributes rows across the cluster.
 
 # %%
 from cassandra.cluster import ResultSet
@@ -367,6 +397,9 @@ class UserMetrics(Model):
 create_keyspace_network_topology(keyspace_name, {"dc1": CASSANDRA_TOTAL_NODES})
 sync_table(UserMetrics)
 
+# %% [markdown]
+# This cell uses the UserMetrics model as an ORM: UserMetrics.create saves a new record, and a ModelQuerySet filter with allow_filtering retrieves metrics whose session_duration is at least 120.
+
 # %%
 # 4. Use it like an ORM
 # Create UserMetrics
@@ -402,6 +435,9 @@ cast(ModelQuerySet, UserMetrics.ttl(86400)).create(
     last_access=fake.date_time(),
 )
 
+# %% [markdown]
+# This cell inserts 100 Faker-generated UserMetrics records inside a single BatchQuery transaction using UserMetrics.batch(b).
+
 # %%
 from typing import cast
 from cassandra.cqlengine.query import BatchQuery
@@ -431,6 +467,9 @@ for user_metric in user_metrics:
 
 session.shutdown()
 cluster.shutdown()
+
+# %% [markdown]
+# This cell holds a commented-out ALTER TABLE command lowering gc_grace_seconds on user_metrics so deleted data becomes visible to the background compaction process sooner.
 
 # %%
 # from cassandra.cqlengine import connection

@@ -24,6 +24,9 @@ VPN_DNS_IP = "10.15.20.1"
 VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 
+# %% [markdown]
+# Validates and normalizes the injected parameters: lowercases NETWORK_MODE and VPN_CLIENT_ALIAS, rejects unsupported network modes and malformed aliases, and derives VPN_CLIENT_DOMAIN from them.
+
 # %%
 NETWORK_MODE = NETWORK_MODE.strip().lower()
 VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
@@ -42,6 +45,9 @@ if (
         "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, and internal hyphens"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Walks up the directory tree from the current working directory to locate the labs-setup root (identified by pyproject.toml plus the cassandra and mongodb module folders), then changes into the hadoop module directory.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -66,6 +72,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "hadoop"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# Defines the client-side Hadoop connection settings and cluster topology: NameNode and ResourceManager client hosts and ports, DataNode and NodeManager endpoints, replication factor, worker counts, and HDFS directory paths resolved per NETWORK_MODE.
 
 # %%
 HADOOP_START_FROM_SCRATCH = False
@@ -126,6 +135,9 @@ HADOOP_DATANODE_DATADIR = "/opt/hadoop/dfs/data"
 
 HADOOP_HDFS_DATADIR = "/opt/hadoop/work-dir"
 
+# %% [markdown]
+# Verifies the data path to the running cluster by querying the NameNode JMX endpoint and the ResourceManager REST API over the configured client host, asserting the YARN cluster reports state STARTED.
+
 # %%
 import json
 from urllib.request import urlopen
@@ -148,6 +160,9 @@ print(
     f"Validated {NETWORK_MODE} data path to NameNode and ResourceManager at "
     f"{HADOOP_NAMENODE_CLIENT_HOST}"
 )
+
+# %% [markdown]
+# Sets up the local working and bind-mount directories, then cross-checks cluster health again over HTTP: NameNode JMX via requests plus ResourceManager /ws/v1/cluster/metrics, asserting all HADOOP_NUM_WORKERS nodes are active.
 
 # %%
 import os
@@ -173,6 +188,9 @@ yarn_metrics = requests.get(
 yarn_metrics.raise_for_status()
 metrics = yarn_metrics.json()["clusterMetrics"]
 assert metrics["activeNodes"] == HADOOP_NUM_WORKERS, metrics
+
+# %% [markdown]
+# Generates a deterministic synthetic dataset of HADOOP_DATA_RECORDS CSV rows (ts, id, user, amount, category, country) using Faker and random with fixed seeds, writing data.csv locally only when missing or when HADOOP_START_FROM_SCRATCH is set.
 
 # %%
 import csv
@@ -208,6 +226,9 @@ if HADOOP_START_FROM_SCRATCH or not os.path.exists(dataset_source_path):
     generate_data(dataset_source_path, HADOOP_DATA_RECORDS)
     print(f"Created {dataset_source_path}")
 
+
+# %% [markdown]
+# Copies the generated data.csv into the namenode container's mounted work-dir so it can be uploaded to HDFS from inside the cluster.
 
 # %%
 import shutil
@@ -360,10 +381,16 @@ assert mapreduce_job.returncode == 0, mapreduce_job.stderr[-4000:]
 # 3. Show output file
 # !docker exec namenode hdfs dfs -ls {HADOOP_HDFS_DATADIR}/output
 
+# %% [markdown]
+# Merges the MapReduce output part-files into a single file in the container's work-dir and sorts it into output_sorted.csv.
+
 # %%
 # 4. Merge and sort output
 # !docker exec namenode hdfs dfs -getmerge {HADOOP_HDFS_DATADIR}/output {HADOOP_WORKDIR}/output.csv
 # !docker exec namenode bash -c "cat {HADOOP_WORKDIR}/output.csv | sort > {HADOOP_WORKDIR}/output_sorted.csv"
+
+# %% [markdown]
+# Reads output_sorted.csv back from the namenode container and validates the MapReduce result: non-empty output where every category row carries a tab-separated aggregate value.
 
 # %%
 import subprocess

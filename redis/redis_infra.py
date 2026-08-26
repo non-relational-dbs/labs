@@ -24,6 +24,9 @@ VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
+# %% [markdown]
+# Validates the papermill-injected NETWORK_MODE and VPN_CLIENT_ALIAS values and derives VPN_CLIENT_DOMAIN as `<alias>.<VPN_DOMAIN>` for later VPN-mode host naming.
+
 # %%
 import re
 
@@ -41,6 +44,9 @@ if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
         "and must not start or end with a hyphen"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Locates the labs-setup root by walking parent directories for a pyproject.toml alongside the cassandra and mongodb module folders, then changes into the redis module directory.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -65,6 +71,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "redis"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# Defines the Redis cluster topology: six redis-node containers with fixed 172.28.0.* internal IPs, per-mode client hosts via `vpn_fqdn` or 127.0.0.1, data/bus ports, and the shared admin and init credentials.
 
 # %%
 REDIS_START_FROM_SCRATCH = START_FROM_SCRATCH
@@ -99,6 +108,9 @@ REDIS_DEFAULT_PASSWORD = "redis"
 REDIS_INIT_USER = "redis"
 REDIS_INIT_PASSWORD = "redis"
 
+# %% [markdown]
+# Creates the local bind mount directory (DOCKER_MOUNTDIR) that will back each Redis node's persistent /data volume.
+
 # %%
 import os
 from pathlib import Path
@@ -123,6 +135,9 @@ if REDIS_START_FROM_SCRATCH:
 else:
     print("Preserving existing containers and volumes")
 
+
+# %% [markdown]
+# Defines clear_bind_directory, which empties the bind mount through a throwaway busybox:1.36 container, and runs it on DOCKER_MOUNTDIR when REDIS_START_FROM_SCRATCH is true.
 
 # %%
 def clear_bind_directory(path):
@@ -258,8 +273,14 @@ with open(redis_compose_yaml_path, "w") as f:
 print(f"Successfully created: '{os.path.relpath(redis_compose_yaml_path)}'")
 display(Markdown(f"```yaml\n{redis_compose_yaml_contents}\n```"))
 
+# %% [markdown]
+# Brings the six-node Redis cluster up in detached mode with `docker compose up -d --wait`, blocking until every node's redis-cli ping healthcheck passes.
+
 # %%
 # !docker compose -f redis-cluster.docker-compose.yml up -d --wait
+
+# %% [markdown]
+# Bootstraps the cluster with `redis-cli --cluster create` across the six node endpoints (three primaries, three replicas), then polls CLUSTER INFO until cluster_state is ok and all six nodes are known.
 
 # %%
 nodes_ports = " ".join(

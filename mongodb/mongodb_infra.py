@@ -24,6 +24,9 @@ VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
+# %% [markdown]
+# Validates and normalizes the papermill-injected network parameters, rejecting any NETWORK_MODE other than lowercase `local` or `vpn`, checking that VPN_HOST_IP belongs to the 10.15.20.* subnet, and composing VPN_CLIENT_DOMAIN from VPN_CLIENT_ALIAS and VPN_DOMAIN.
+
 # %%
 import re
 
@@ -41,6 +44,9 @@ if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
         "and must not start or end with a hyphen"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Locates the labs-setup project root by walking parent directories until it finds a `pyproject.toml` alongside the `cassandra` and `mongodb` folders, then changes the working directory to the mongodb module.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -65,6 +71,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "mongodb"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# Derives the replica set topology for `MONGODB_REPLICA_SET`: three node names (`mongodb-node-1` through `mongodb-node-3`), ports starting at 27011, admin credentials, and mode-dependent client, advertised, and Compose hostnames built with `vpn_fqdn`.
 
 # %%
 MONGODB_START_FROM_SCRATCH = START_FROM_SCRATCH
@@ -101,6 +110,9 @@ MONGO_INITDB_ROOT_USERNAME = "admin"
 MONGO_INITDB_ROOT_PASSWORD = "admin"
 MONGO_INITDB_DATABASE = "admin"
 
+# %% [markdown]
+# Resolves the host bind-mount directory under `MODULE_DIR/mount` and creates it, defining `MONGODB_LOCAL_CLUSTER_KEY_PATH` for the shared mongo-keyfile used to secure the replica set.
+
 # %%
 import os
 from pathlib import Path
@@ -126,6 +138,9 @@ if MONGODB_START_FROM_SCRATCH:
 else:
     print("Preserving existing containers and volumes")
 
+
+# %% [markdown]
+# When START_FROM_SCRATCH is true, removes the mongo-keyfile and wipes every bind-mount directory through `clear_bind_directory`, which deletes contents via `rm -rf` inside a throwaway `mongo:7.0` container; otherwise existing state is left untouched.
 
 # %%
 import shutil
@@ -267,8 +282,14 @@ with open(mongodb_compose_yaml_path, "w") as f:
 (print(f"Successfully created: '{os.path.relpath(mongodb_compose_yaml_path)}'"),)
 display(Markdown(f"```yaml\n{mongodb_compose_yaml_contents}\n```"))
 
+# %% [markdown]
+# Brings up the three `mongod` services defined in `mongodb-cluster.docker-compose.yml` in detached mode and waits until every healthcheck reports healthy.
+
 # %%
 # !docker compose -f mongodb-cluster.docker-compose.yml up -d --wait
+
+# %% [markdown]
+# Initiates the replica set with `replSetInitiate` over a direct pymongo `MongoClient` connection to the first node, then polls each member's `hello` command until a PRIMARY is elected within 30 seconds and verifies via `replSetGetStatus` that the cluster reports exactly one PRIMARY and two SECONDARY members.
 
 # %%
 import time
@@ -353,6 +374,9 @@ else:
     for m in status["members"]:
         icon = "🟢" if m["health"] == 1 else "🔴"
         print(f"{icon} {m['name']:<35} | {m['stateStr']:<10}")
+
+# %% [markdown]
+# Reference shell snippets for opening authenticated `mongosh` sessions on each of the three nodes through `docker exec`.
 
 # %%
 # docker exec -it mongodb-node-1 mongosh --port 27011 -u "admin" -p "admin" --authenticationDatabase "admin"

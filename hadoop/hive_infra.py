@@ -24,6 +24,9 @@ VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
+# %% [markdown]
+# Validates and normalizes the injected parameters: lowercases NETWORK_MODE and VPN_CLIENT_ALIAS, rejects unsupported network modes and malformed aliases, and derives VPN_CLIENT_DOMAIN from them.
+
 # %%
 NETWORK_MODE = NETWORK_MODE.strip().lower()
 VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
@@ -42,6 +45,9 @@ if (
         "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, and internal hyphens"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Walks up the directory tree from the current working directory to locate the labs-setup root (identified by pyproject.toml plus the cassandra and mongodb module folders), then changes into the hadoop module directory.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -66,6 +72,9 @@ if LABS_ROOT is None:
 MODULE_DIR = LABS_ROOT / "hadoop"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
+
+# %% [markdown]
+# Declares the Hive service topology and connection constants: PostgreSQL metastore database credentials, container names and hosts for hive-metastore-db / hive-schema-init / hive-metastore / hive-server2, internal and external ports, warehouse paths, dependent Hadoop endpoints, and image versions.
 
 # %%
 HIVE_START_FROM_SCRATCH = START_FROM_SCRATCH
@@ -155,6 +164,9 @@ HADOOP_RESOURCEMANAGER_PORT = 8032
 APACHE_HIVE_IMAGE = "apache/hive:4.0.1"
 POSTGRES_IMAGE = "postgres:18"
 
+# %% [markdown]
+# Creates the local working directory and the DOCKER_MOUNTDIR bind-mount root shared with the Hive containers.
+
 # %%
 import os
 from pathlib import Path
@@ -179,6 +191,9 @@ if HIVE_START_FROM_SCRATCH:
 else:
     print("Preserving existing containers and volumes")
 
+
+# %% [markdown]
+# When HIVE_START_FROM_SCRATCH is set, wipes each Hive service's bind-mount directory (clearing read-only Windows files through an on_rm_error chmod handler) and recreates empty directories for fresh state.
 
 # %%
 import shutil
@@ -219,6 +234,9 @@ for container in [HIVE_METASTORE_CONTAINER_NAME, HIVE_SERVER2_CONTAINER_NAME]:
     os.makedirs(dest_dir, exist_ok=True)
     with open(os.path.join(dest_dir, "core-site.xml"), "w") as f:
         f.write(core_site_xml_content)
+
+# %% [markdown]
+# Renders hive-site.xml with the metastore JDBC connection to PostgreSQL, Thrift and Web UI binds, Tez execution engine settings, scratch/staging directories, and HDFS/YARN endpoints, writing it into the custom conf directory of both hive-metastore and hive-server2.
 
 # %%
 hive_site_xml_content = f"""<?xml version="1.0"?>
@@ -366,6 +384,9 @@ for container in [HIVE_METASTORE_CONTAINER_NAME, HIVE_SERVER2_CONTAINER_NAME]:
     with open(os.path.join(dest_dir, "hive-site.xml"), "w") as f:
         f.write(hive_site_xml_content)
 
+# %% [markdown]
+# Writes tez-site.xml configuring the Tez DAG runtime for YARN: dist-lib tarball URIs on HDFS, cluster classpath prefixes, application-master launch options, and Hive scratch directories, copied into both Hive containers' custom conf directories.
+
 # %%
 tez_site_content = f"""<?xml version="1.0"?>
 <configuration>
@@ -440,6 +461,9 @@ for container in [HIVE_METASTORE_CONTAINER_NAME, HIVE_SERVER2_CONTAINER_NAME]:
     os.makedirs(dest_dir, exist_ok=True)
     with open(os.path.join(dest_dir, "tez-site.xml"), "w") as f:
         f.write(tez_site_content)
+
+# %% [markdown]
+# Writes a log4j.properties file into both Hive containers' custom conf directories, routing Hive, Hadoop, Tez, Parquet, and Iceberg logging to the console at INFO level.
 
 # %%
 import os
@@ -655,8 +679,14 @@ yaml_contents = yaml.dump(
 with open(compose_filename, "w") as f:
     f.write(yaml_contents)
 
+# %% [markdown]
+# Commented-out escape hatch: takes the HDFS NameNode out of safe mode via hdfs dfsadmin -safemode leave if provisioning is blocked by safe mode.
+
 # %%
 # # !docker exec namenode hdfs dfsadmin -safemode leave
+
+# %% [markdown]
+# Provisions HDFS for Hive: clears stale /tmp/hive and warehouse paths when starting from scratch, then creates the hive Linux user and group inside the namenode container, grants sudo access, and prepares /tmp/hive plus the managed and external warehouse directories owned by hive:hive.
 
 # %%
 if HIVE_START_FROM_SCRATCH:
@@ -686,6 +716,9 @@ if HIVE_START_FROM_SCRATCH:
 # !docker exec -u hadoop namenode hdfs dfs -mkdir -p {HIVE_DATADIR}/external
 # !docker exec -u hadoop namenode hdfs dfs -chown -R hive:hive {HIVE_USERDIR}
 # !docker exec -u hadoop namenode hdfs dfs -chmod -R 777 {HIVE_USERDIR}
+
+# %% [markdown]
+# Starts the full hive-cluster.docker-compose.yml stack in detached mode with --wait, so PostgreSQL, the metastore schema init job, hive-metastore, and hive-server2 must all pass their healthchecks before execution continues.
 
 # %% vscode={"languageId": "markdown"}
 # !docker compose -f hive-cluster.docker-compose.yml up -d --wait

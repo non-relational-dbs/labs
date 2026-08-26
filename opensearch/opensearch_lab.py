@@ -28,6 +28,9 @@ VPN_DNS_IP = "10.15.20.1"
 VPN_DOMAIN = "vpn.itam.mx"
 VPN_CLIENT_ALIAS = "mavasbel"
 
+# %% [markdown]
+# Validates the papermill-injected NETWORK_MODE and VPN_CLIENT_ALIAS values, accepting only lowercase local or vpn mode, and derives the student's VPN_CLIENT_DOMAIN for VPN addressing.
+
 # %%
 import re
 
@@ -45,6 +48,9 @@ if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
         "and must not start or end with a hyphen"
     )
 VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
+
+# %% [markdown]
+# Locates the labs-setup project root by walking up from the current directory until a pyproject.toml with the cassandra and mongodb module directories is found, then changes into the opensearch module directory.
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -70,6 +76,9 @@ MODULE_DIR = LABS_ROOT / "opensearch"
 os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
+
+# %% [markdown]
+# Defines the three-node cluster endpoints on ports 9201-9203, the admin credentials used by opensearchpy, the course-products index name, and whether DELETE_INDEX_AT_END removes it during cleanup.
 
 # %%
 OPENSEARCH_NODE_NAMES = [f"opensearch-node-{i}" for i in range(1, 4)]
