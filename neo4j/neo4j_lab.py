@@ -16,17 +16,30 @@
 # # Setup
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 
 # %%
+import re
+
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if not VPN_CLIENT_ALIAS:
+    raise ValueError("VPN_CLIENT_ALIAS must not be empty")
+if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, or hyphens "
+        "and must not start or end with a hyphen"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -76,8 +89,18 @@ mount_path.mkdir(parents=True, exist_ok=True)
 # %%
 from neo4j import GraphDatabase
 
-NEO4J_HOST = "neo4j" if NETWORK_MODE == "docker" else VPN_HOST_IP
-n4j_uri = f"bolt://{NEO4J_HOST}:{NEO4J_PORT}"
+
+def vpn_fqdn(container_name):
+    return f"{container_name}.{VPN_CLIENT_DOMAIN}"
+
+
+NEO4J_CONTAINER_NAME = "neo4j-instance"
+NEO4J_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else vpn_fqdn(NEO4J_CONTAINER_NAME)
+)
+n4j_uri = f"bolt://{NEO4J_CLIENT_HOST}:{NEO4J_PORT}"
 n4j_auth = (NEO4J_INIT_USER, NEO4J_INIT_PASSWORD)
 
 driver = GraphDatabase.driver(n4j_uri, auth=n4j_auth)

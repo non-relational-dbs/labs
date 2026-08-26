@@ -16,18 +16,31 @@
 # # Setup
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
 # %%
+import re
+
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if not VPN_CLIENT_ALIAS:
+    raise ValueError("VPN_CLIENT_ALIAS must not be empty")
+if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, or hyphens "
+        "and must not start or end with a hyphen"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -61,30 +74,36 @@ HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 
 OPENSEARCH_DASHBOARD_PORT = 5601
 
-OPENSEARCH_CLUSTER_NAME = "opensearch-cluster.mavasbel.vpn.itam.mx"
+OPENSEARCH_CLUSTER_NAME = "opensearch-cluster"
 OPENSEARCH_TOTAL_NODES = 3
 
 OPENSEARCH_NODE_NAMES = [
     f"opensearch-node-{i+1}" for i in range(OPENSEARCH_TOTAL_NODES)
 ]
-OPENSEARCH_NODE_IPS = [
-    name if NETWORK_MODE == "docker" else VPN_HOST_IP
-    for name in OPENSEARCH_NODE_NAMES
-]
+
+
+def vpn_fqdn(container_name):
+    return f"{container_name}.{VPN_CLIENT_DOMAIN}"
+
+
 OPENSEARCH_NODE_REST_API_PORTS = [9200 + (i + 1) for i in range(OPENSEARCH_TOTAL_NODES)]
 OPENSEARCH_NODE_PERF_ANA_PORTS = [
     16280 + (i + 1) for i in range(OPENSEARCH_TOTAL_NODES)
 ]
 OPENSEARCH_NODE_HOSTNAMES = [
-    OPENSEARCH_NODE_NAMES[j]
-    if NETWORK_MODE == "docker"
-    else VPN_HOST_IP
-    for j in range(OPENSEARCH_TOTAL_NODES)
+    name if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in OPENSEARCH_NODE_NAMES
 ]
-OPENSEARCH_NODE_HTTP_HOSTNAMES = [
-    f"https://{OPENSEARCH_NODE_HOSTNAMES[j]}:{OPENSEARCH_NODE_REST_API_PORTS[j]}"
-    for j in range(OPENSEARCH_TOTAL_NODES)
+OPENSEARCH_NODE_INTERNAL_ENDPOINTS = [
+    f"https://{name}:{port}"
+    for name, port in zip(OPENSEARCH_NODE_NAMES, OPENSEARCH_NODE_REST_API_PORTS)
 ]
+OPENSEARCH_DASHBOARDS_NAME = "opensearch-dashboards"
+OPENSEARCH_DASHBOARDS_HOSTNAME = (
+    OPENSEARCH_DASHBOARDS_NAME
+    if NETWORK_MODE == "local"
+    else vpn_fqdn(OPENSEARCH_DASHBOARDS_NAME)
+)
 
 OPENSEARCH_WORKDIR = "/usr/share/opensearch/data"
 
@@ -155,7 +174,7 @@ opensearch_compose_dict = {
         "opensearch-cluster": {"name": "opensearch-network", "driver": "bridge"}
     },
 }
-opensearch_hosts_json = '["' + '","'.join(OPENSEARCH_NODE_HTTP_HOSTNAMES) + '"]'
+opensearch_hosts_json = '["' + '","'.join(OPENSEARCH_NODE_INTERNAL_ENDPOINTS) + '"]'
 
 for i in range(OPENSEARCH_TOTAL_NODES):
 
@@ -185,6 +204,7 @@ https-enabled = false
             f"node.name={OPENSEARCH_NODE_NAMES[i]}",
             f"discovery.seed_hosts={','.join(OPENSEARCH_NODE_NAMES)}",
             f"cluster.initial_cluster_manager_nodes={','.join(OPENSEARCH_NODE_NAMES)}",
+            "cluster.routing.allocation.disk.threshold_enabled=false",
             f"http.port={OPENSEARCH_NODE_REST_API_PORTS[i]}",
             "bootstrap.memory_lock=true",
             f"OPENSEARCH_JAVA_OPTS=-Xms{node_start_heap} -Xmx{node_max_heap}",
@@ -227,9 +247,10 @@ https-enabled = false
         },
     }
 
-opensearch_compose_dict["services"]["opensearch-dashboards"] = {
+opensearch_compose_dict["services"][OPENSEARCH_DASHBOARDS_NAME] = {
     "image": "opensearchproject/opensearch-dashboards:3.4.0",
-    "container_name": "opensearch-dashboards",
+    "container_name": OPENSEARCH_DASHBOARDS_NAME,
+    "hostname": OPENSEARCH_DASHBOARDS_HOSTNAME,
     "environment": [
         f"OPENSEARCH_HOSTS={opensearch_hosts_json}",
         f"OPENSEARCH_JAVA_OPTS=-Xms{node_start_heap} -Xmx{node_max_heap}",

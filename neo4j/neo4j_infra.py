@@ -16,18 +16,31 @@
 # # Setup
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
 # %%
+import re
+
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if not VPN_CLIENT_ALIAS:
+    raise ValueError("VPN_CLIENT_ALIAS must not be empty")
+if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, or hyphens "
+        "and must not start or end with a hyphen"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -57,6 +70,19 @@ print(f"Working directory: {MODULE_DIR}")
 NEO4J_START_FROM_SCRATCH = START_FROM_SCRATCH
 DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
 HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
+
+
+def vpn_fqdn(container_name):
+    return f"{container_name}.{VPN_CLIENT_DOMAIN}"
+
+
+NEO4J_SERVICE_NAME = "neo4j"
+NEO4J_CONTAINER_NAME = "neo4j-instance"
+NEO4J_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else vpn_fqdn(NEO4J_CONTAINER_NAME)
+)
 
 # NEO4J_WORKDIR = "/var/lib/neo4j"
 NEO4J_PORT = 7687
@@ -121,9 +147,14 @@ neo4j_compose_dict = {
         "neo4j-network": {"name": "neo4j-network", "driver": "bridge"}
     },
     "services": {
-        "neo4j": {
+        NEO4J_SERVICE_NAME: {
             "image": "neo4j:ubi9",
-            "container_name": "neo4j-instance",
+            "container_name": NEO4J_CONTAINER_NAME,
+            "hostname": (
+                NEO4J_CONTAINER_NAME
+                if NETWORK_MODE == "local"
+                else vpn_fqdn(NEO4J_CONTAINER_NAME)
+            ),
             "volumes": [
                 f"{os.path.join(DOCKER_MOUNTDIR, 'data')}:/data",
                 f"{os.path.join(DOCKER_MOUNTDIR, 'neo4j', 'logs')}:/logs",
@@ -145,6 +176,11 @@ neo4j_compose_dict = {
                 "NEO4J_dbms_security_procedures_allowlist": "apoc.*,gds.*",
                 "NEO4J_server_config_strict__validation_enabled": "false",
                 "NEO4J_server_bolt_enabled": "true",
+                "NEO4J_server_default__listen__address": "0.0.0.0",
+                "NEO4J_server_bolt_listen__address": f"0.0.0.0:{NEO4J_PORT}",
+                "NEO4J_server_bolt_advertised__address": f"{NEO4J_CLIENT_HOST}:{NEO4J_PORT}",
+                "NEO4J_server_http_listen__address": f"0.0.0.0:{NEO4J_WEBUI_PORT}",
+                "NEO4J_server_http_advertised__address": f"{NEO4J_CLIENT_HOST}:{NEO4J_WEBUI_PORT}",
             },
             "ports": [
                 f"{HOST_BIND_IP}:{NEO4J_WEBUI_PORT}:{NEO4J_WEBUI_PORT}",

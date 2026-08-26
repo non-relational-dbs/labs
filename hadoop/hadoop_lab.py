@@ -17,17 +17,31 @@
 #
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 
 # %%
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+if (
+    not VPN_CLIENT_ALIAS
+    or VPN_CLIENT_ALIAS.startswith("-")
+    or VPN_CLIENT_ALIAS.endswith("-")
+    or not VPN_CLIENT_ALIAS.isascii()
+    or not VPN_CLIENT_ALIAS.replace("-", "").isalnum()
+):
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, and internal hyphens"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -56,18 +70,25 @@ print(f"Working directory: {MODULE_DIR}")
 # %%
 HADOOP_START_FROM_SCRATCH = False
 HADOOP_DATA_RECORDS = 100_000
-HADOOP_VPN_DOMAIN = "mavasbel.vpn.itam.mx"
 DOCKER_INTERNAL_HOST = "host.docker.internal"
 
-HADOOP_NAMENODE_HOSTNAME = "namenode" if NETWORK_MODE == "docker" else VPN_HOST_IP
-HADOOP_NAMENODE_IP = HADOOP_NAMENODE_HOSTNAME
+HADOOP_NAMENODE_HOSTNAME = "namenode"
+HADOOP_NAMENODE_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{HADOOP_NAMENODE_HOSTNAME}.{VPN_CLIENT_DOMAIN}"
+)
+HADOOP_NAMENODE_IP = HADOOP_NAMENODE_CLIENT_HOST
 HADOOP_NAMENODE_PORT = 8020
 HADOOP_NAMENODE_WEBUI_PORT = 9870
 
-HADOOP_RESOURCEMANAGER_HOSTNAME = (
-    "resourcemanager" if NETWORK_MODE == "docker" else VPN_HOST_IP
+HADOOP_RESOURCEMANAGER_HOSTNAME = "resourcemanager"
+HADOOP_RESOURCEMANAGER_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{HADOOP_RESOURCEMANAGER_HOSTNAME}.{VPN_CLIENT_DOMAIN}"
 )
-HADOOP_RESOURCEMANAGER_IP = HADOOP_RESOURCEMANAGER_HOSTNAME
+HADOOP_RESOURCEMANAGER_IP = HADOOP_RESOURCEMANAGER_CLIENT_HOST
 HADOOP_RESOURCEMANAGER_WEBUI_PORT = 8088
 HADOOP_RESOURCEMANAGER_RPC_APP_MANAGER_PORT = 8032
 HADOOP_RESOURCEMANAGER_TRACKER_PORT = 8031
@@ -81,21 +102,21 @@ HADOOP_REPLICATION = 2
 HADOOP_NUM_WORKERS = 2
 
 HADOOP_DATANODE_NAMES = [f"datanode-{i+1}" for i in range(HADOOP_NUM_WORKERS)]
-HADOOP_DATANODE_HOSTNAMES = [
-    HADOOP_DATANODE_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
-    for i in range(HADOOP_NUM_WORKERS)
+HADOOP_DATANODE_HOSTNAMES = HADOOP_DATANODE_NAMES
+HADOOP_DATANODE_IPS = [
+    f"{name}.{VPN_CLIENT_DOMAIN}" if NETWORK_MODE == "vpn" else "127.0.0.1"
+    for name in HADOOP_DATANODE_NAMES
 ]
-HADOOP_DATANODE_IPS = HADOOP_DATANODE_HOSTNAMES
 HADOOP_DATANODE_WEBUI_PORTS = [9864 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_DATANODE_TRANSFER_PORTS = [9866 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_DATANODE_IPC_PORTS = [6867 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 
 HADOOP_NODEMANAGER_NAMES = [f"nodemanager-{i+1}" for i in range(HADOOP_NUM_WORKERS)]
-HADOOP_NODEMANAGER_HOSTNAMES = [
-    HADOOP_NODEMANAGER_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
-    for i in range(HADOOP_NUM_WORKERS)
+HADOOP_NODEMANAGER_HOSTNAMES = HADOOP_NODEMANAGER_NAMES
+HADOOP_NODEMANAGER_IPS = [
+    f"{name}.{VPN_CLIENT_DOMAIN}" if NETWORK_MODE == "vpn" else "127.0.0.1"
+    for name in HADOOP_NODEMANAGER_NAMES
 ]
-HADOOP_NODEMANAGER_IPS = HADOOP_NODEMANAGER_HOSTNAMES
 HADOOP_NODEMANAGER_WEBUI_PORTS = [8050 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_NODEMANAGER_RPC_PORTS = [8051 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 
@@ -110,7 +131,7 @@ import json
 from urllib.request import urlopen
 
 with urlopen(
-    f"http://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_WEBUI_PORT}/jmx"
+    f"http://{HADOOP_NAMENODE_CLIENT_HOST}:{HADOOP_NAMENODE_WEBUI_PORT}/jmx"
     "?qry=Hadoop:service=NameNode,name=NameNodeInfo",
     timeout=15,
 ) as response:
@@ -118,14 +139,14 @@ with urlopen(
 assert namenode_jmx["beans"], namenode_jmx
 
 with urlopen(
-    f"http://{HADOOP_RESOURCEMANAGER_HOSTNAME}:8088/ws/v1/cluster/info",
+    f"http://{HADOOP_RESOURCEMANAGER_CLIENT_HOST}:8088/ws/v1/cluster/info",
     timeout=15,
 ) as response:
     yarn_info = json.load(response)["clusterInfo"]
 assert yarn_info["state"] == "STARTED", yarn_info
 print(
     f"Validated {NETWORK_MODE} data path to NameNode and ResourceManager at "
-    f"{HADOOP_NAMENODE_HOSTNAME}"
+    f"{HADOOP_NAMENODE_CLIENT_HOST}"
 )
 
 # %%
@@ -140,13 +161,13 @@ Path(DOCKER_MOUNTDIR).mkdir(parents=True, exist_ok=True)
 import requests
 
 namenode_jmx = requests.get(
-    f"http://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_WEBUI_PORT}/jmx?qry=Hadoop:service=NameNode,name=NameNodeInfo",
+    f"http://{HADOOP_NAMENODE_CLIENT_HOST}:{HADOOP_NAMENODE_WEBUI_PORT}/jmx?qry=Hadoop:service=NameNode,name=NameNodeInfo",
     timeout=30,
 )
 namenode_jmx.raise_for_status()
 assert namenode_jmx.json()["beans"], namenode_jmx.text
 yarn_metrics = requests.get(
-    f"http://{HADOOP_RESOURCEMANAGER_HOSTNAME}:{HADOOP_RESOURCEMANAGER_WEBUI_PORT}/ws/v1/cluster/metrics",
+    f"http://{HADOOP_RESOURCEMANAGER_CLIENT_HOST}:{HADOOP_RESOURCEMANAGER_WEBUI_PORT}/ws/v1/cluster/metrics",
     timeout=30,
 )
 yarn_metrics.raise_for_status()

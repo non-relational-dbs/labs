@@ -16,17 +16,30 @@
 # # Setup
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 
 # %%
+import re
+
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if not VPN_CLIENT_ALIAS:
+    raise ValueError("VPN_CLIENT_ALIAS must not be empty")
+if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, or hyphens "
+        "and must not start or end with a hyphen"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -55,14 +68,17 @@ print(f"Working directory: {MODULE_DIR}")
 # %%
 DOCKER_INTERNAL_HOST = "host.docker.internal"
 
-MONGODB_NODES_DOMAIN = "mavasbel.vpn.itam.mx"
 MONGODB_REPLICA_SET = "replica_set_0"
 MONGODB_TOTAL_NODES = 3
 
 MONGODB_NODE_NAMES = [f"mongodb-node-{i + 1}" for i in range(MONGODB_TOTAL_NODES)]
-MONGODB_NODE_HOSTNAMES = [
-    MONGODB_NODE_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
-    for i in range(MONGODB_TOTAL_NODES)
+def vpn_fqdn(container_name):
+    return f"{container_name}.{VPN_CLIENT_DOMAIN}"
+
+
+MONGODB_NODE_CLIENT_HOSTS = [
+    "127.0.0.1" if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in MONGODB_NODE_NAMES
 ]
 MONGODB_NODE_PORTS = [27010 + (i + 1) for i in range(0, MONGODB_TOTAL_NODES)]
 
@@ -89,15 +105,42 @@ mount_path.mkdir(parents=True, exist_ok=True)
 # %%
 from pymongo import MongoClient
 
-nodes_ports = [
-    f"{MONGODB_NODE_HOSTNAMES[i]}:{MONGODB_NODE_PORTS[i]}"
-    for i in range(MONGODB_TOTAL_NODES)
-]
-connection_string = (
-    f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}@"
-    f"{','.join(nodes_ports)}/"
-    f"?replicaSet={MONGODB_REPLICA_SET}&authSource=admin&w=majority"
-)
+nodes_ports = list(zip(MONGODB_NODE_CLIENT_HOSTS, MONGODB_NODE_PORTS))
+
+if NETWORK_MODE == "local":
+    primary_endpoint = None
+    for host, port in nodes_ports:
+        direct_uri = (
+            f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}"
+            f"@{host}:{port}/?authSource=admin"
+        )
+        try:
+            with MongoClient(
+                direct_uri,
+                directConnection=True,
+                serverSelectionTimeoutMS=5000,
+            ) as node_client:
+                hello = node_client.admin.command("hello")
+                if hello.get("isWritablePrimary") or hello.get("ismaster"):
+                    primary_endpoint = (host, port)
+                    break
+        except Exception:
+            continue
+    if primary_endpoint is None:
+        raise TimeoutError("Could not find the MongoDB primary through published ports")
+    primary_host, primary_port = primary_endpoint
+    connection_string = (
+        f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}"
+        f"@{primary_host}:{primary_port}/"
+        "?directConnection=true&authSource=admin&w=majority"
+    )
+else:
+    seed_list = ",".join(f"{host}:{port}" for host, port in nodes_ports)
+    connection_string = (
+        f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}@"
+        f"{seed_list}/"
+        f"?replicaSet={MONGODB_REPLICA_SET}&authSource=admin&w=majority"
+    )
 print(f"Connection URL: {connection_string}")
 
 client = MongoClient(connection_string, serverSelectionTimeoutMS=20000)
@@ -105,6 +148,7 @@ assert client.admin.command("ping")["ok"] == 1
 replica_status = client.admin.command("replSetGetStatus")
 assert len(replica_status["members"]) == MONGODB_TOTAL_NODES
 assert sum(member["stateStr"] == "PRIMARY" for member in replica_status["members"]) == 1
+assert sum(member["stateStr"] == "SECONDARY" for member in replica_status["members"]) == 2
 
 db = client["db"]
 users_collection = db["users"]

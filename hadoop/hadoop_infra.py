@@ -17,18 +17,32 @@
 #
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
 # %%
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+if (
+    not VPN_CLIENT_ALIAS
+    or VPN_CLIENT_ALIAS.startswith("-")
+    or VPN_CLIENT_ALIAS.endswith("-")
+    or not VPN_CLIENT_ALIAS.isascii()
+    or not VPN_CLIENT_ALIAS.replace("-", "").isalnum()
+):
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, and internal hyphens"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -56,19 +70,39 @@ print(f"Working directory: {MODULE_DIR}")
 
 # %%
 HADOOP_START_FROM_SCRATCH = START_FROM_SCRATCH
-HADOOP_VPN_DOMAIN = "mavasbel.vpn.itam.mx"
 DOCKER_INTERNAL_HOST = "host.docker.internal"
 DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
 HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 
 HADOOP_NAMENODE_HOSTNAME = "namenode"
-HADOOP_NAMENODE_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "namenode"
+HADOOP_NAMENODE_COMPOSE_HOST = (
+    HADOOP_NAMENODE_HOSTNAME
+    if NETWORK_MODE == "local"
+    else f"{HADOOP_NAMENODE_HOSTNAME}.{VPN_CLIENT_DOMAIN}"
+)
+HADOOP_NAMENODE_IP = (
+    f"{HADOOP_NAMENODE_HOSTNAME}.{VPN_CLIENT_DOMAIN}"
+    if NETWORK_MODE == "vpn"
+    else "127.0.0.1"
+)
 HADOOP_NAMENODE_PORT = 8020
 HADOOP_NAMENODE_WEBUI_PORT = 9870
+HADOOP_NAMENODE_DISTRIBUTED_HOST = (
+    f"{HADOOP_NAMENODE_HOSTNAME}.{VPN_CLIENT_DOMAIN}"
+    if NETWORK_MODE == "vpn"
+    else f"{HADOOP_NAMENODE_HOSTNAME}.lvh.me"
+)
 
 HADOOP_RESOURCEMANAGER_HOSTNAME = "resourcemanager"
+HADOOP_RESOURCEMANAGER_COMPOSE_HOST = (
+    HADOOP_RESOURCEMANAGER_HOSTNAME
+    if NETWORK_MODE == "local"
+    else f"{HADOOP_RESOURCEMANAGER_HOSTNAME}.{VPN_CLIENT_DOMAIN}"
+)
 HADOOP_RESOURCEMANAGER_IP = (
-    VPN_HOST_IP if NETWORK_MODE == "vpn" else "resourcemanager"
+    f"{HADOOP_RESOURCEMANAGER_HOSTNAME}.{VPN_CLIENT_DOMAIN}"
+    if NETWORK_MODE == "vpn"
+    else "127.0.0.1"
 )
 HADOOP_RESOURCEMANAGER_WEBUI_PORT = 8088
 HADOOP_RESOURCEMANAGER_RPC_APP_MANAGER_PORT = 8032
@@ -84,13 +118,17 @@ HADOOP_NUM_WORKERS = 2
 
 HADOOP_DATANODE_NAMES = [f"datanode-{i+1}" for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_DATANODE_HOSTNAMES = [
-    HADOOP_DATANODE_NAMES[i] for i in range(HADOOP_NUM_WORKERS)
-]
-HADOOP_DATANODE_CLIENT_HOSTS = [
-    VPN_HOST_IP if NETWORK_MODE == "vpn" else name
+    f"{name}.{VPN_CLIENT_DOMAIN}" if NETWORK_MODE == "vpn" else f"{name}.lvh.me"
     for name in HADOOP_DATANODE_NAMES
 ]
-HADOOP_DATANODE_IPS = HADOOP_DATANODE_CLIENT_HOSTS
+HADOOP_DATANODE_COMPOSE_HOSTS = [
+    name if NETWORK_MODE == "local" else f"{name}.{VPN_CLIENT_DOMAIN}"
+    for name in HADOOP_DATANODE_NAMES
+]
+HADOOP_DATANODE_IPS = [
+    f"{name}.{VPN_CLIENT_DOMAIN}" if NETWORK_MODE == "vpn" else "127.0.0.1"
+    for name in HADOOP_DATANODE_NAMES
+]
 HADOOP_DATANODE_WEBUI_PORTS = [9864 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_DATANODE_TRANSFER_PORTS = [9866 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
 HADOOP_DATANODE_IPC_PORTS = [6867 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
@@ -99,8 +137,12 @@ HADOOP_NODEMANAGER_NAMES = [f"nodemanager-{i+1}" for i in range(HADOOP_NUM_WORKE
 HADOOP_NODEMANAGER_HOSTNAMES = [
     HADOOP_NODEMANAGER_NAMES[i] for i in range(HADOOP_NUM_WORKERS)
 ]
+HADOOP_NODEMANAGER_COMPOSE_HOSTS = [
+    name if NETWORK_MODE == "local" else f"{name}.{VPN_CLIENT_DOMAIN}"
+    for name in HADOOP_NODEMANAGER_NAMES
+]
 HADOOP_NODEMANAGER_IPS = [
-    VPN_HOST_IP if NETWORK_MODE == "vpn" else name
+    f"{name}.{VPN_CLIENT_DOMAIN}" if NETWORK_MODE == "vpn" else "127.0.0.1"
     for name in HADOOP_NODEMANAGER_NAMES
 ]
 HADOOP_NODEMANAGER_WEBUI_PORTS = [8050 + (i * 10) for i in range(HADOOP_NUM_WORKERS)]
@@ -333,6 +375,11 @@ RESOURCEMANAGER_DOCKER_LIMIT = f"{yarn_heap + DOCKER_OVERHEAD_MB}M"
 NODEMANAGER_DOCKER_LIMIT = f"{yarn_heap + yarn_nodemanager_vault + DOCKER_OVERHEAD_MB}M"  # El NodeManager es la suma (Memoria del Demonio + Memoria para Trabajos + Overhead)
 
 hadoop_compose_file_name = "hadoop-cluster.docker-compose.yml"
+namenode_ports = [
+    f"{HOST_BIND_IP}:{HADOOP_NAMENODE_PORT}:{HADOOP_NAMENODE_PORT}",
+    f"{HOST_BIND_IP}:{HADOOP_NAMENODE_WEBUI_PORT}:{HADOOP_NAMENODE_WEBUI_PORT}",
+]
+
 hadoop_compose_dict = {
     "name": "hadoop-cluster",
     "networks": {
@@ -377,12 +424,11 @@ hadoop_compose_dict = {
                 f"{os.path.join(DOCKER_MOUNTDIR, 'namenode', 'work-dir')}:{HADOOP_WORKDIR}",
                 f"{os.path.join(DOCKER_MOUNTDIR, 'namenode', 'name-dir')}:{HADOOP_NAMENODE_NAMEDIR}",
             ],
-            "networks": ["hadoop-cluster"],
-            "hostname": HADOOP_NAMENODE_HOSTNAME,
-            "ports": [
-                f"{HOST_BIND_IP}:{HADOOP_NAMENODE_PORT}:{HADOOP_NAMENODE_PORT}",
-                f"{HOST_BIND_IP}:{HADOOP_NAMENODE_WEBUI_PORT}:{HADOOP_NAMENODE_WEBUI_PORT}",
-            ],
+            "networks": {
+                "hadoop-cluster": {"aliases": [HADOOP_NAMENODE_DISTRIBUTED_HOST]}
+            },
+            "hostname": HADOOP_NAMENODE_COMPOSE_HOST,
+            "ports": namenode_ports,
             "extra_hosts": [
                 f"{DOCKER_INTERNAL_HOST}:host-gateway",
             ],
@@ -439,7 +485,7 @@ hadoop_compose_dict = {
                 f"{os.path.join(DOCKER_MOUNTDIR, 'resourcemanager', 'work-dir')}:{HADOOP_WORKDIR}",
             ],
             "networks": ["hadoop-cluster"],
-            "hostname": HADOOP_RESOURCEMANAGER_HOSTNAME,
+            "hostname": HADOOP_RESOURCEMANAGER_COMPOSE_HOST,
             "ports": [
                 f"{HOST_BIND_IP}:{HADOOP_RESOURCEMANAGER_WEBUI_PORT}:{HADOOP_RESOURCEMANAGER_WEBUI_PORT}",
                 f"{HOST_BIND_IP}:{HADOOP_RESOURCEMANAGER_RPC_APP_MANAGER_PORT}:{HADOOP_RESOURCEMANAGER_RPC_APP_MANAGER_PORT}",
@@ -507,14 +553,16 @@ for i in range(0, HADOOP_NUM_WORKERS):
             "HDFS-SITE.XML_dfs.datanode.address": f"0.0.0.0:{HADOOP_DATANODE_TRANSFER_PORTS[i]}",
             "HDFS-SITE.XML_dfs.datanode.http.address": f"0.0.0.0:{HADOOP_DATANODE_WEBUI_PORTS[i]}",
             "HDFS-SITE.XML_dfs.datanode.ipc.address": f"0.0.0.0:{HADOOP_DATANODE_IPC_PORTS[i]}",
-            "HDFS-SITE.XML_dfs.datanode.hostname": HADOOP_DATANODE_CLIENT_HOSTS[i],
+            "HDFS-SITE.XML_dfs.datanode.hostname": HADOOP_DATANODE_HOSTNAMES[i],
         },
         "volumes": [
             f"{os.path.join(DOCKER_MOUNTDIR, HADOOP_DATANODE_NAMES[i], 'work-dir')}:{HADOOP_WORKDIR}",
             f"{os.path.join(DOCKER_MOUNTDIR, HADOOP_DATANODE_NAMES[i], 'data-dir')}:{HADOOP_DATANODE_DATADIR}",
         ],
-        "networks": ["hadoop-cluster"],
-        "hostname": HADOOP_DATANODE_HOSTNAMES[i],
+        "networks": {
+            "hadoop-cluster": {"aliases": [HADOOP_DATANODE_HOSTNAMES[i]]}
+        },
+        "hostname": HADOOP_DATANODE_COMPOSE_HOSTS[i],
         "ports": [
             f"{HOST_BIND_IP}:{HADOOP_DATANODE_WEBUI_PORTS[i]}:{HADOOP_DATANODE_WEBUI_PORTS[i]}",
             f"{HOST_BIND_IP}:{HADOOP_DATANODE_TRANSFER_PORTS[i]}:{HADOOP_DATANODE_TRANSFER_PORTS[i]}",
@@ -586,7 +634,7 @@ for i in range(0, HADOOP_NUM_WORKERS):
             f"{os.path.join(DOCKER_MOUNTDIR, HADOOP_NODEMANAGER_NAMES[i], 'work-dir')}:{HADOOP_WORKDIR}",
         ],
         "networks": ["hadoop-cluster"],
-        "hostname": HADOOP_NODEMANAGER_HOSTNAMES[i],
+        "hostname": HADOOP_NODEMANAGER_COMPOSE_HOSTS[i],
         "ports": [
             f"{HOST_BIND_IP}:{HADOOP_NODEMANAGER_WEBUI_PORTS[i]}:{HADOOP_NODEMANAGER_WEBUI_PORTS[i]}",
             f"{HOST_BIND_IP}:{HADOOP_NODEMANAGER_RPC_PORTS[i]}:{HADOOP_NODEMANAGER_RPC_PORTS[i]}",

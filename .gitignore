@@ -57,6 +57,7 @@ spark/mount/shared-workspace/spark-warehouse
 spark/mount/shared-workspace/iceberg-warehouse
 spark/mount/shared-workspace/local-warehouse
 spark/mount/shared-workspace/derby.log
+spark/mount/shared-workspace/spark_job_env.tar.gz
 
 # mongodb data
 mongodb/config/*

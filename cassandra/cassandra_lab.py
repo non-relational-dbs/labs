@@ -16,17 +16,30 @@
 # # Setup
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 
 # %%
+import re
+
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if not VPN_CLIENT_ALIAS:
+    raise ValueError("VPN_CLIENT_ALIAS must not be empty")
+if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, or hyphens "
+        "and must not start or end with a hyphen"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -60,11 +73,14 @@ CASSANDRA_CLUSTER_NAME = "cassandra-cluster"
 CASSANDRA_TOTAL_NODES = 3
 
 CASSANDRA_NODE_NAMES = [f"cassandra-node-{i+1}" for i in range(CASSANDRA_TOTAL_NODES)]
-CASSANDRA_NODE_HOSTNAMES = [
-    "127.0.0.1" if NETWORK_MODE == "docker" else VPN_HOST_IP
-    for i in range(CASSANDRA_TOTAL_NODES)
+def vpn_fqdn(container_name):
+    return f"{container_name}.{VPN_CLIENT_DOMAIN}"
+
+
+CASSANDRA_NODE_CLIENT_HOSTS = [
+    "127.0.0.1" if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in CASSANDRA_NODE_NAMES
 ]
-CASSANDRA_NODE_IPS = CASSANDRA_NODE_HOSTNAMES
 CASSANDRA_NODE_GOSSIP_PORTS = [7000 + (i + 1) for i in range(CASSANDRA_TOTAL_NODES)]
 CASSANDRA_NODE_RPC_PORTS = [9040 + (i + 1) for i in range(CASSANDRA_TOTAL_NODES)]
 CASSANDRA_NODE_SSL_GOSSIP_PORTS = [7500 + (i + 1) for i in range(CASSANDRA_TOTAL_NODES)]
@@ -94,12 +110,25 @@ os.environ.setdefault("CQLENG_ALLOW_SCHEMA_MANAGEMENT", "True")
 
 # %%
 from cassandra.cluster import Cluster
-from cassandra.connection import DefaultEndPoint
+from cassandra.connection import DefaultEndPoint, DefaultEndPointFactory
 from cassandra.auth import PlainTextAuthProvider
 from cassandra.query import dict_factory
 
+
+class ClientEndPointFactory(DefaultEndPointFactory):
+    def __init__(self, hosts_by_port):
+        super().__init__()
+        self.hosts_by_port = hosts_by_port
+
+    def create(self, row):
+        port = row.get("native_port")
+        if port not in self.hosts_by_port:
+            return super().create(row)
+        return DefaultEndPoint(self.hosts_by_port[port], port)
+
+
 cassandra_nodes = [
-    DefaultEndPoint(CASSANDRA_NODE_HOSTNAMES[j], CASSANDRA_NODE_RPC_PORTS[j])
+    DefaultEndPoint(CASSANDRA_NODE_CLIENT_HOSTS[j], CASSANDRA_NODE_RPC_PORTS[j])
     for j in range(CASSANDRA_TOTAL_NODES)
 ]
 cassandra_endpoints = [
@@ -112,7 +141,14 @@ print(f"JDBC URL: jdbc:cassandra://{','.join(cassandra_endpoints)}")
 auth_provider = PlainTextAuthProvider(
     username=CASSANDRA_INIT_USER, password=CASSANDRA_INIT_PASSWORD
 )
-cluster = Cluster(contact_points=cassandra_nodes, auth_provider=auth_provider)
+endpoint_factory = ClientEndPointFactory(
+    dict(zip(CASSANDRA_NODE_RPC_PORTS, CASSANDRA_NODE_CLIENT_HOSTS))
+)
+cluster = Cluster(
+    contact_points=cassandra_nodes,
+    auth_provider=auth_provider,
+    endpoint_factory=endpoint_factory,
+)
 
 session = cluster.connect()
 session.row_factory = dict_factory
@@ -120,6 +156,13 @@ print(f"✅ Connected to cluster: {cluster.metadata.cluster_name}")
 print(f"🌐 Nodes found: {len(cluster.metadata.all_hosts())}")
 assert cluster.metadata.cluster_name == CASSANDRA_CLUSTER_NAME
 assert len(cluster.metadata.all_hosts()) == CASSANDRA_TOTAL_NODES
+discovered_endpoints = {
+    (host.endpoint.address, host.endpoint.port)
+    for host in cluster.metadata.all_hosts()
+}
+expected_endpoints = set(zip(CASSANDRA_NODE_CLIENT_HOSTS, CASSANDRA_NODE_RPC_PORTS))
+assert discovered_endpoints == expected_endpoints, discovered_endpoints
+assert all(host.is_up for host in cluster.metadata.all_hosts())
 
 # %%
 import pprint

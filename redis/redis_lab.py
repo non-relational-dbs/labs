@@ -16,17 +16,30 @@
 # # Setup
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 
 # %%
+import re
+
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if not VPN_CLIENT_ALIAS:
+    raise ValueError("VPN_CLIENT_ALIAS must not be empty")
+if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, or hyphens "
+        "and must not start or end with a hyphen"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -57,11 +70,17 @@ DOCKER_INTERNAL_HOST = "host.docker.internal"
 
 REDIS_TOTAL_NODES = 6
 REDIS_NODE_NAMES = [f"redis-node-{i+1}" for i in range(REDIS_TOTAL_NODES)]
-REDIS_NODE_HOSTNAMES = [
-    REDIS_NODE_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
-    for i in range(REDIS_TOTAL_NODES)
+REDIS_NODE_INTERNAL_IPS = [
+    f"172.28.0.{i + 11}" for i in range(REDIS_TOTAL_NODES)
 ]
-REDIS_NODE_IPS = REDIS_NODE_HOSTNAMES
+def vpn_fqdn(container_name):
+    return f"{container_name}.{VPN_CLIENT_DOMAIN}"
+
+
+REDIS_NODE_CLIENT_HOSTS = [
+    "127.0.0.1" if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in REDIS_NODE_NAMES
+]
 REDIS_NODE_PORTS = [6380 + i + 1 for i in range(REDIS_TOTAL_NODES)]
 REDIS_NODE_BUS_PORTS = [16380 + i + 1 for i in range(REDIS_TOTAL_NODES)]
 
@@ -92,7 +111,7 @@ from redis.cluster import LoadBalancingStrategy
 from redis import Redis
 
 redis_nodes = [
-    ClusterNode(f"{REDIS_NODE_HOSTNAMES[i]}", REDIS_NODE_PORTS[i])
+    ClusterNode(REDIS_NODE_CLIENT_HOSTS[i], REDIS_NODE_PORTS[i])
     for i in range(0, REDIS_TOTAL_NODES)
 ]
 pprint.pprint(f"🔗 Connecting to: {redis_nodes}")
@@ -101,6 +120,12 @@ print(
     f"🔗 Connection String: redis://{REDIS_INIT_USER}:{REDIS_INIT_PASSWORD}:{redis_endpoints}"
 )
 
+def redis_address_remap(address):
+    host, port = address
+    if NETWORK_MODE == "local" and host in REDIS_NODE_INTERNAL_IPS:
+        return "127.0.0.1", port
+    return address
+
 redis_cluster = RedisCluster(
     startup_nodes=redis_nodes,
     username=REDIS_INIT_USER,
@@ -108,6 +133,7 @@ redis_cluster = RedisCluster(
     decode_responses=True,
     load_balancing_strategy=LoadBalancingStrategy.RANDOM_REPLICA,
     require_full_coverage=True,
+    address_remap=redis_address_remap if NETWORK_MODE == "local" else None,
 )
 cluster_details = redis_cluster.cluster_info()
 cluster_status = cluster_details["cluster_state"]
@@ -120,10 +146,20 @@ cluster_nodes = Redis(
 ).execute_command("CLUSTER NODES")
 nodes_count = len(cluster_nodes)
 primaries = list(redis_cluster.get_primaries())
+discovered_endpoints = {
+    (node.host, node.port) for node in redis_cluster.get_nodes()
+}
+expected_endpoints = set(zip(REDIS_NODE_CLIENT_HOSTS, REDIS_NODE_PORTS))
 assert cluster_status == "ok", cluster_details
 assert int(cluster_details["cluster_slots_assigned"]) == 16384, cluster_details
 assert nodes_count == REDIS_TOTAL_NODES, nodes_count
 assert len(primaries) == 3, primaries
+assert len(discovered_endpoints) == len(primaries), discovered_endpoints
+assert discovered_endpoints.issubset(expected_endpoints), discovered_endpoints
+validation_key = "network-mode-validation"
+validation_value = "ok"
+assert redis_cluster.set(validation_key, validation_value)
+assert redis_cluster.get(validation_key) == validation_value
 print("✅ Cluster connected")
 print(f"🟢 Cluster State: {cluster_status.upper()}")
 print(f"🌐 Nodes Discovered: {nodes_count}; primaries={len(primaries)}")
@@ -148,7 +184,7 @@ cluster_info = []
 config_get = []
 for i in range(REDIS_TOTAL_NODES):
     redis = Redis(
-        host=REDIS_NODE_HOSTNAMES[i],
+        host=REDIS_NODE_CLIENT_HOSTS[i],
         port=REDIS_NODE_PORTS[i],
         username=REDIS_INIT_USER,
         password=REDIS_INIT_PASSWORD,
@@ -245,7 +281,7 @@ redis_cluster.close()
 # idx = 4
 
 # master_node = Redis(
-#     host=REDIS_NODE_HOSTNAMES[idx],
+#     host=REDIS_NODE_CLIENT_HOSTS[idx],
 #     port=REDIS_NODE_PORTS[idx],
 #     username=REDIS_INIT_USER,
 #     password=REDIS_INIT_PASSWORD,
@@ -268,7 +304,7 @@ redis_cluster.close()
 # idx = 4
 
 # replica = Redis(
-#     host=REDIS_NODE_HOSTNAMES[idx],
+#     host=REDIS_NODE_CLIENT_HOSTS[idx],
 #     port=REDIS_NODE_PORTS[idx],
 #     username=REDIS_INIT_USER,
 #     password=REDIS_INIT_PASSWORD,

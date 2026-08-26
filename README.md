@@ -4,7 +4,7 @@
 
 **One repository. Eight distributed systems.**
 
-Spin up **Cassandra · MongoDB · Hadoop · Hive · Spark · OpenSearch · Redis · Neo4j** as production-shaped, multi-node clusters — over a VPN — from Jupyter notebooks that *generate their own* Docker Compose files.
+Spin up **Cassandra · MongoDB · Hadoop · Hive · Spark · OpenSearch · Redis · Neo4j** as production-shaped clusters for local or VPN access from Jupyter notebooks that *generate their own* Docker Compose files.
 
 [![Python 3.10](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Docker Compose](https://img.shields.io/badge/Docker-Compose%20v2-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
@@ -51,14 +51,14 @@ You never hand-edit a raw Compose file. The notebooks generate them from Python 
 |---|---|
 | **Language / tooling** | Python 3.10 · Java 17 · Jupyter · uv · Docker Compose v2 |
 | **Databases & engines** | Cassandra 5.0 · MongoDB 7.0 · Hadoop 3.4.3 · Hive 4.0.1 · Spark 3.5.7 · OpenSearch 3.4.0 · Redis 8.4 · Neo4j (ubi9) |
-| **Topology** | Distributed, multi-node, over a VPN (`mavasbel.vpn.itam.mx`) |
+| **Topology** | Distributed, multi-node, with Local loopback and alias-aware VPN client paths |
 | **Learning model** | `infra` (deploy) → `lab` (learn) notebook pairs |
 
 ---
 
 ## Architecture at a glance
 
-Every cluster supports two real network paths: Docker service discovery by default, or distinct ports published on the configurable WireGuard address (`10.15.20.100` by default).
+Every cluster supports two real network paths: host-side notebooks use `127.0.0.1` and published ports by default, or per-container FQDNs of the form `<container>.<VPN_CLIENT_ALIAS>.<VPN_DOMAIN>` and ports published on the configurable WireGuard address (`10.15.20.100` by default). Docker and Compose provide the infrastructure in both paths; they are not a third network mode.
 
 ```mermaid
 flowchart LR
@@ -75,7 +75,7 @@ flowchart LR
         R["Redis 8.4 ×6"]
         N["Neo4j"]
     end
-    NB -->|"host.docker.internal + VPN DNS"| D
+    NB -->|"127.0.0.1 or container.alias.domain"| D
     D --> C
     D --> M
     D --> H
@@ -368,7 +368,7 @@ The first line must report version 17. Newer Java releases are not a compatible 
 
 ### 6. WireGuard (course VPN)
 
-VPN mode publishes the clusters on the course WireGuard address. Docker mode is the portable default and does not require WireGuard.
+VPN mode publishes the clusters on the course WireGuard address. Local mode is the portable default and does not require WireGuard.
 
 <details>
 <summary><b>Windows</b></summary>
@@ -421,14 +421,16 @@ wg show
 | Java | **17** for Spark 3.5.7 |
 | uv | ≥ 0.12.5 (see setup section) |
 | Jupyter | installed via `uv sync` (pulls `ipykernel`) |
-| VPN access | membership to the course VPN, domain `mavasbel.vpn.itam.mx` (WireGuard — see setup section) |
+| VPN access | membership to the course VPN, domain `vpn.itam.mx` (WireGuard — see setup section) |
 | Resources | ≥ 16 GB RAM recommended — Hadoop + Spark concurrently are heavy |
 
-> **Why the VPN?** VPN mode makes the published services reachable through the course subnet and uses DNS `10.15.20.1`. Docker mode keeps the data path inside deterministic Compose networks.
+> **Why the VPN?** VPN mode makes published services reachable through the course subnet and uses DNS `10.15.20.1`. Local mode runs notebooks on the host through loopback publications. Docker and Compose still provide the infrastructure in both modes.
 
 ---
 
 ## Quickstart
+
+This directory is an independent `uv` project with its own `pyproject.toml`, `uv.lock`, and `.venv`. Run dependency and notebook commands from `labs-setup`; do not reuse the parent repository's environment.
 
 ```bash
 git clone https://github.com/non-relational-dbs/labs-setup.git
@@ -447,32 +449,72 @@ Every notebook is paired with a reviewable `py:percent` file and has exactly one
 
 | Parameter | Default | Purpose |
 |---|---|---|
-| `NETWORK_MODE` | `"docker"` | `docker` uses service names and internal ports; `vpn` uses the configured WireGuard address |
+| `NETWORK_MODE` | `"local"` | accepts only lowercase `local` or `vpn`; Local notebooks use host loopback and published ports |
 | `VPN_HOST_IP` | `"10.15.20.100"` | local WireGuard address used only by VPN mode |
 | `VPN_DNS_IP` | `"10.15.20.1"` | DNS server used only by VPN-mode containers |
+| `VPN_CLIENT_ALIAS` | `"mavasbel"` | configurable student/client alias in each VPN service identity |
+| `VPN_DOMAIN` | `"vpn.itam.mx"` | configurable DNS suffix in each VPN service identity |
 | `START_FROM_SCRATCH` | `False` | infra notebooks only; set `True` for an isolated clean rebuild |
 
-Build the Docker-network runner once from this project's lockfile:
+Local mode is the default. Both the infrastructure and lab notebooks execute on the host; Docker Compose publishes each client port on `127.0.0.1`:
 
 ```bash
-docker build -t non-relational-dbs-labs-runner -f Dockerfile.runner .
+uv run papermill cassandra/cassandra_infra.ipynb cassandra/cassandra_infra.executed.ipynb -p NETWORK_MODE local -p START_FROM_SCRATCH True
+uv run papermill cassandra/cassandra_lab.ipynb cassandra/cassandra_lab.executed.ipynb -p NETWORK_MODE local
+
+uv run papermill mongodb/mongodb_infra.ipynb mongodb/mongodb_infra.executed.ipynb -p NETWORK_MODE local -p START_FROM_SCRATCH True
+uv run papermill mongodb/mongodb_lab.ipynb mongodb/mongodb_lab.executed.ipynb -p NETWORK_MODE local
+uv run papermill mongodb/mongodb_infra_configsvr.ipynb mongodb/mongodb_infra_configsvr.executed.ipynb -p NETWORK_MODE local -p START_FROM_SCRATCH True
+
+uv run papermill redis/redis_infra.ipynb redis/redis_infra.executed.ipynb -p NETWORK_MODE local -p START_FROM_SCRATCH True
+uv run papermill redis/redis_lab.ipynb redis/redis_lab.executed.ipynb -p NETWORK_MODE local
+
+uv run papermill neo4j/neo4j_infra.ipynb neo4j/neo4j_infra.executed.ipynb -p NETWORK_MODE local -p START_FROM_SCRATCH True
+uv run papermill neo4j/neo4j_lab.ipynb neo4j/neo4j_lab.executed.ipynb -p NETWORK_MODE local
+
+uv run papermill opensearch/opensearch_infra.ipynb opensearch/opensearch_infra.executed.ipynb -p NETWORK_MODE local -p START_FROM_SCRATCH True
+uv run papermill opensearch/opensearch_lab.ipynb opensearch/opensearch_lab.executed.ipynb -p NETWORK_MODE local
+
+uv run papermill hadoop/hadoop_infra.ipynb hadoop/hadoop_infra.executed.ipynb -p NETWORK_MODE local -p START_FROM_SCRATCH True
+uv run papermill hadoop/hadoop_lab.ipynb hadoop/hadoop_lab.executed.ipynb -p NETWORK_MODE local
+
+uv run papermill hadoop/hive_infra.ipynb hadoop/hive_infra.executed.ipynb -p NETWORK_MODE local -p START_FROM_SCRATCH True
+uv run papermill hadoop/hive_lab.ipynb hadoop/hive_lab.executed.ipynb -p NETWORK_MODE local
+
+uv run papermill spark/spark_infra.ipynb spark/spark_infra.executed.ipynb -p NETWORK_MODE local -p START_FROM_SCRATCH True
+uv run papermill spark/spark_lab.ipynb spark/spark_lab.executed.ipynb -p NETWORK_MODE local
 ```
 
-Docker mode is the default. Run infrastructure on the host, then run the lab from the runner attached to the generated network:
+For VPN mode, connect WireGuard, confirm that this machine owns `VPN_HOST_IP`, and use the same alias and domain in every infrastructure/lab pair. Services bind to that address, while clients use `<container>.<VPN_CLIENT_ALIAS>.<VPN_DOMAIN>`, for example `cassandra-node-1.<VPN_CLIENT_ALIAS>.<VPN_DOMAIN>`:
 
 ```bash
-uv run papermill cassandra/cassandra_infra.ipynb cassandra/cassandra_infra.executed.ipynb -p START_FROM_SCRATCH true
-docker run --rm --network cassandra-network -v "${PWD}:/workspace" -w /workspace/cassandra non-relational-dbs-labs-runner papermill cassandra_lab.ipynb cassandra_lab.executed.ipynb -k python3
+uv run papermill cassandra/cassandra_infra.ipynb cassandra/cassandra_infra.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx -p START_FROM_SCRATCH True
+uv run papermill cassandra/cassandra_lab.ipynb cassandra/cassandra_lab.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx
+
+uv run papermill mongodb/mongodb_infra.ipynb mongodb/mongodb_infra.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx -p START_FROM_SCRATCH True
+uv run papermill mongodb/mongodb_lab.ipynb mongodb/mongodb_lab.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx
+uv run papermill mongodb/mongodb_infra_configsvr.ipynb mongodb/mongodb_infra_configsvr.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx -p START_FROM_SCRATCH True
+
+uv run papermill redis/redis_infra.ipynb redis/redis_infra.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx -p START_FROM_SCRATCH True
+uv run papermill redis/redis_lab.ipynb redis/redis_lab.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx
+
+uv run papermill neo4j/neo4j_infra.ipynb neo4j/neo4j_infra.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx -p START_FROM_SCRATCH True
+uv run papermill neo4j/neo4j_lab.ipynb neo4j/neo4j_lab.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx
+
+uv run papermill opensearch/opensearch_infra.ipynb opensearch/opensearch_infra.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx -p START_FROM_SCRATCH True
+uv run papermill opensearch/opensearch_lab.ipynb opensearch/opensearch_lab.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx
+
+uv run papermill hadoop/hadoop_infra.ipynb hadoop/hadoop_infra.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx -p START_FROM_SCRATCH True
+uv run papermill hadoop/hadoop_lab.ipynb hadoop/hadoop_lab.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx
+
+uv run papermill hadoop/hive_infra.ipynb hadoop/hive_infra.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx -p START_FROM_SCRATCH True
+uv run papermill hadoop/hive_lab.ipynb hadoop/hive_lab.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx
+
+uv run papermill spark/spark_infra.ipynb spark/spark_infra.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx -p START_FROM_SCRATCH True
+uv run papermill spark/spark_lab.ipynb spark/spark_lab.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p VPN_CLIENT_ALIAS mavasbel -p VPN_DOMAIN vpn.itam.mx
 ```
 
-For VPN mode, connect WireGuard, confirm that this machine owns the configured address, and inject `NETWORK_MODE=vpn` into both notebooks:
-
-```bash
-uv run papermill cassandra/cassandra_infra.ipynb cassandra/cassandra_infra.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100 -p START_FROM_SCRATCH true
-uv run papermill cassandra/cassandra_lab.ipynb cassandra/cassandra_lab.executed.ipynb -p NETWORK_MODE vpn -p VPN_HOST_IP 10.15.20.100
-```
-
-Spark depends on the Hadoop stack, so run `hadoop_infra.ipynb` before `spark_infra.ipynb`. The lockfile-derived runner is also used for Spark VPN mode so the Linux executors and driver share Python 3.10 while the master, HDFS, and driver callback ports use `VPN_HOST_IP`.
+Hive and Spark depend on the Hadoop stack, so run `hadoop_infra.ipynb` before either infrastructure notebook. Keep Docker Compose service names unchanged: they are internal implementation details used for container-to-container traffic, not host-side client endpoints.
 
 A lab result is invalid if its required infrastructure notebook did not pass first.
 
@@ -512,7 +554,7 @@ A 3-node **replica set** (`replica_set_0`), plus a separate notebook that deploy
 | `mongodb-node-1` | 27011 |
 | `mongodb-node-2` | 27012 |
 | `mongodb-node-3` | 27013 |
-| `config-server-1 … 3` (`config_rs`) | 27011 … 27013 |
+| `config-server-1 … 3` (`config_rs`) | 27111 … 27113 |
 
 - Root credentials: `admin` / `admin` (db `admin`)
 - Workdir: `/data/db`
@@ -580,7 +622,7 @@ The lab creates external tables, runs aggregations, and explores partitioning �
 
 ### Spark
 
-Spark 3.5.7 (Scala 2.12, Java 17, Python 3) with a **custom-built** JupyterLab image and a **venv-pack** job environment (for shipping self-contained Python virtualenvs to workers). Delta Lake and Apache Iceberg jars are bundled.
+Spark 3.5.7 (Scala 2.12, Java 17, Python 3) with a **custom-built** JupyterLab image and a **venv-pack** job environment (for shipping self-contained Python virtualenvs to workers). Delta Lake and Apache Iceberg dependencies are bundled, so Spark does not resolve Maven packages or download JARs at runtime.
 
 | Component | Port |
 |---|---|
@@ -590,7 +632,8 @@ Spark 3.5.7 (Scala 2.12, Java 17, Python 3) with a **custom-built** JupyterLab i
 
 - Base image `apache/spark:3.5.7-scala2.12-java17-python3-ubuntu`
 - Custom images: `dockerfile.spark-jupyter`, `dockerfile.spark-job-venv`
-- Jars: `delta-spark_2.12-3.2.0.jar`, `iceberg-spark-runtime-3.5_2.12-1.6.1.jar`
+- Tracked, pinned, SHA-256-validated JARs: `iceberg-spark-runtime-3.5_2.12-1.6.1.jar`, `delta-spark_2.12-3.2.0.jar`, `delta-storage-3.2.0.jar`, `antlr4-runtime-4.9.3.jar`
+- The host-side Spark driver binds callback ports 4050/4051 and advertises `host.docker.internal`; executors use the shipped `venv-pack` Python environment and bundled classpath inside Docker.
 - Shared workspace `/opt/spark/shared-workspace`
 
 ```mermaid
@@ -614,6 +657,9 @@ A 3-node OpenSearch 3.4.0 cluster (with the performance analyzer) plus OpenSearc
 - Dashboards: `5601`
 - Admin: `admin` / `OpenSearchP455`
 - Workdir `/usr/share/opensearch/data`
+- Local REST endpoints: `https://127.0.0.1:9201`, `:9202`, `:9203`
+- VPN REST endpoints: `https://opensearch-node-1.<VPN_CLIENT_ALIAS>.<VPN_DOMAIN>:9201`, `https://opensearch-node-2.<VPN_CLIENT_ALIAS>.<VPN_DOMAIN>:9202`, `https://opensearch-node-3.<VPN_CLIENT_ALIAS>.<VPN_DOMAIN>:9203`
+- Dashboards: `http://127.0.0.1:5601` locally or `http://opensearch-dashboards.<VPN_CLIENT_ALIAS>.<VPN_DOMAIN>:5601` over the VPN
 
 ```mermaid
 flowchart LR
@@ -653,6 +699,8 @@ A single Neo4j node with the **APOC** and **Graph Data Science** (`graph-data-sc
 
 - Credentials: `neo4j` / `password`
 - Image `neo4j:ubi9` · unrestricted procedures `apoc.*, gds.*`
+- Bolt: `bolt://127.0.0.1:7687` locally or `bolt://neo4j-instance.<VPN_CLIENT_ALIAS>.<VPN_DOMAIN>:7687` over the VPN
+- Browser: `http://127.0.0.1:7474` locally or `http://neo4j-instance.<VPN_CLIENT_ALIAS>.<VPN_DOMAIN>:7474` over the VPN
 
 The lab covers node/relationship creation and property-bearing relationship patterns.
 
@@ -660,25 +708,28 @@ The lab covers node/relationship creation and property-bearing relationship patt
 
 ## Network modes
 
-All notebooks support exactly two real execution modes. `docker` is always the default.
+All notebooks support exactly two lowercase execution modes. `local` is always the default; every other value is rejected. Docker/Compose is the cluster infrastructure in both modes, not a client network mode.
 
 | Mode | Client path | Published binding | DNS |
 |---|---|---|---|
-| `docker` | lockfile-derived runner attached to the Compose network | `127.0.0.1` for optional host inspection | Docker service discovery |
-| `vpn` | configured WireGuard address | `VPN_HOST_IP` | `VPN_DNS_IP` (`10.15.20.1`) |
+| `local` | host notebook through `127.0.0.1` and each published port | `127.0.0.1` | host resolver |
+| `vpn` | host notebook through `<container>.<VPN_CLIENT_ALIAS>.<VPN_DOMAIN>` | `VPN_HOST_IP` | `VPN_DNS_IP` (`10.15.20.1`) |
 
 The current course defaults are:
 
 | Concept | Value |
 |---|---|
-| VPN domain | `mavasbel.vpn.itam.mx` |
+| VPN client alias | `mavasbel` |
+| VPN domain | `vpn.itam.mx` |
 | Configurable host IP | `10.15.20.100` |
 | Internal DNS | `10.15.20.1` |
-| Host alias inside notebooks | `host.docker.internal` |
+| Local client identity | `127.0.0.1` |
 
-In Docker mode, cluster membership and lab traffic use Compose service names and internal container ports. In VPN mode, every published port binds only to `VPN_HOST_IP`; cluster addresses and client endpoints derive from that parameter while DNS remains a separate value.
+In Local mode, notebooks run on the host and connect only through ports published on `127.0.0.1`. In VPN mode, every published port binds only to `VPN_HOST_IP`, and externally visible client identities are derived as `<container>.<VPN_CLIENT_ALIAS>.<VPN_DOMAIN>`. Bare Compose service names remain internal to Docker networks for cluster membership and container-to-container traffic.
 
-To use a different WireGuard address, inject `VPN_HOST_IP` through papermill or edit the parameters cell and rerun the infrastructure notebook. Do not replace Docker-internal service names or `VPN_DNS_IP`.
+CoreDNS has one base A record per student, `<student_alias>.<VPN_DOMAIN>`, and wildcard service resolution for `<container>.<student_alias>.<VPN_DOMAIN>` to the same WireGuard client IP. A notebook's `VPN_CLIENT_ALIAS` selects the applicable `<student_alias>`.
+
+`VPN_HOST_IP`, `VPN_DNS_IP`, `VPN_CLIENT_ALIAS`, and `VPN_DOMAIN` are notebook parameters. Inject the values through papermill or edit the single parameters cell, then rerun the infrastructure notebook before its lab. Keep Docker-internal service names unchanged.
 
 ---
 
@@ -713,6 +764,7 @@ docker compose -f <name>.docker-compose.yml down -v
 | Symptom | Cause | Fix |
 |---|---|---|
 | Nodes can't see each other | Wrong network mode or address | Confirm `NETWORK_MODE`; for VPN, confirm `VPN_HOST_IP` is assigned locally |
+| VPN client hostname does not resolve | Missing/stale base record or wildcard service rule | Run `nslookup <VPN_CLIENT_ALIAS>.<VPN_DOMAIN> <VPN_DNS_IP>` and `nslookup opensearch-node-1.<VPN_CLIENT_ALIAS>.<VPN_DOMAIN> <VPN_DNS_IP>`; confirm both return `VPN_HOST_IP` |
 | Port already in use | Stale container / another module | `docker compose … down -v`, or set `START_FROM_SCRATCH=True` |
 | Hive/Tez errors | Tez not loaded in HDFS | Re-run the "Load dist-lib" cell in `hive_infra.ipynb` |
 | Spark jobs fail on workers | Missing venv-pack env | Re-run `spark_infra.ipynb` build cells (`spark-jupyter`, `spark-job-venv`) |
@@ -723,6 +775,8 @@ docker compose -f <name>.docker-compose.yml down -v
 ## Conventions & contributing
 
 - Notebook pairs: `<tech>_infra.ipynb` (deploy) + `<tech>_lab.ipynb` (learn).
+- The 17 `py:percent` `.py` sources are canonical. Force source-to-notebook refreshes with `uv run jupytext --to ipynb --update <source.py>`; do not use bidirectional `--sync` for this refresh.
+- Each notebook has exactly one papermill `parameters` cell. Run every infrastructure/lab pair completely in both Local and VPN modes before declaring acceptance; Hive and Spark also require healthy Hadoop infrastructure.
 - Constants live at the top of each notebook; compose files are generated, not committed.
 - Credentials are course-local defaults (documented above) — not for production use.
 - Student homework notebooks are intentionally **not** in this repository (they live in the course's internal grading repo).

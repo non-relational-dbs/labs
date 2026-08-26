@@ -16,18 +16,31 @@
 # # Setup
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
 # %%
+import re
+
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if not VPN_CLIENT_ALIAS:
+    raise ValueError("VPN_CLIENT_ALIAS must not be empty")
+if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, or hyphens "
+        "and must not start or end with a hyphen"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -58,16 +71,27 @@ MONGODB_START_FROM_SCRATCH = START_FROM_SCRATCH
 DOCKER_INTERNAL_HOST = "host.docker.internal"
 DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
 HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
-BOOTSTRAP_HOST = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 
-MONGODB_NODES_DOMAIN = "mavasbel.vpn.itam.mx"
 MONGODB_REPLICA_SET = "replica_set_0"
 MONGODB_TOTAL_NODES = 3
 
 MONGODB_NODE_NAMES = [f"mongodb-node-{i + 1}" for i in range(MONGODB_TOTAL_NODES)]
-MONGODB_NODE_HOSTNAMES = [
-    MONGODB_NODE_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
-    for i in range(MONGODB_TOTAL_NODES)
+def vpn_fqdn(container_name):
+    return f"{container_name}.{VPN_CLIENT_DOMAIN}"
+
+
+MONGODB_NODE_INTERNAL_HOSTS = MONGODB_NODE_NAMES
+MONGODB_NODE_CLIENT_HOSTS = [
+    "127.0.0.1" if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in MONGODB_NODE_NAMES
+]
+MONGODB_NODE_ADVERTISED_HOSTS = [
+    name if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in MONGODB_NODE_NAMES
+]
+MONGODB_NODE_COMPOSE_HOSTS = [
+    name if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in MONGODB_NODE_NAMES
 ]
 MONGODB_NODE_PORTS = [27010 + (i + 1) for i in range(0, MONGODB_TOTAL_NODES)]
 
@@ -150,14 +174,16 @@ if not os.path.exists(MONGODB_LOCAL_CLUSTER_KEY_PATH):
 mongodb_compose_dict = {
     "name": "mongodb-cluster",
     "services": {},
-    "networks": {"mongodb-network": {"external": True, "name": "mongodb-network"}},
+    "networks": {
+        "mongodb-network": {"name": "mongodb-network", "driver": "bridge"}
+    },
 }
 
 for i in range(MONGODB_TOTAL_NODES):
     mongodb_compose_dict["services"][MONGODB_NODE_NAMES[i]] = {
         "image": "mongo:7.0",
         "container_name": MONGODB_NODE_NAMES[i],
-        "hostname": MONGODB_NODE_HOSTNAMES[i],
+        "hostname": MONGODB_NODE_COMPOSE_HOSTS[i],
         "command": [
             "bash",
             "-c",
@@ -196,10 +222,6 @@ for i in range(MONGODB_TOTAL_NODES):
             f"{HOST_BIND_IP}:{MONGODB_NODE_PORTS[i]}:{MONGODB_NODE_PORTS[i]}"
         ],
         "extra_hosts": [f"{DOCKER_INTERNAL_HOST}:host-gateway"],
-        # + [
-        #     f"{MONGODB_NODE_HOSTNAMES[j]}:host-gateway"
-        #     for j in range(MONGODB_TOTAL_NODES)
-        # ],
         "dns": DOCKER_DNS,
         "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "1024M"}}},
         "healthcheck": {
@@ -257,7 +279,8 @@ MONGODB_PRIMARY_SELECTION_TIMEOUT_SECONDS = 30
 client_options = {"directConnection": True, "serverSelectionTimeoutMS": 5000}
 
 init_client = MongoClient(
-    f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}@{BOOTSTRAP_HOST}:{MONGODB_NODE_PORTS[0]}/",
+    f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}"
+    f"@{MONGODB_NODE_CLIENT_HOSTS[0]}:{MONGODB_NODE_PORTS[0]}/?authSource=admin",
     **client_options,
 )
 try:
@@ -269,7 +292,7 @@ try:
             "members": [
                 {
                     "_id": i,
-                    "host": f"{MONGODB_NODE_HOSTNAMES[i]}:{MONGODB_NODE_PORTS[i]}",
+                    "host": f"{MONGODB_NODE_ADVERTISED_HOSTS[i]}:{MONGODB_NODE_PORTS[i]}",
                 }
                 for i in range(MONGODB_TOTAL_NODES)
             ],
@@ -284,20 +307,23 @@ except OperationFailure as e:
 
 start_time = time.time()
 primary_found = False
+primary_index = None
 print(f"⏳ Waiting for Primary (Timeout: {MONGODB_PRIMARY_SELECTION_TIMEOUT_SECONDS}s)")
 while time.time() - start_time < MONGODB_PRIMARY_SELECTION_TIMEOUT_SECONDS:
     for i in range(MONGODB_TOTAL_NODES):
         try:
             with MongoClient(
-                f"mongodb://{BOOTSTRAP_HOST}:{MONGODB_NODE_PORTS[i]}/",
+                f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}"
+                f"@{MONGODB_NODE_CLIENT_HOSTS[i]}:{MONGODB_NODE_PORTS[i]}/?authSource=admin",
                 **client_options,
             ) as node_check:
                 res = node_check.admin.command("hello")
                 if res.get("isWritablePrimary") or res.get("ismaster"):
                     primary_found = True
+                    primary_index = i
                     elapsed = round(time.time() - start_time, 2)
                     print(
-                        f"\n🌟 Primary Elected: {res.get('me')} (Found at {MONGODB_NODE_HOSTNAMES[i]}:{MONGODB_NODE_PORTS[i]} in {elapsed}s)"
+                        f"\n🌟 Primary Elected: {res.get('me')} (Found at {MONGODB_NODE_CLIENT_HOSTS[i]}:{MONGODB_NODE_PORTS[i]} in {elapsed}s)"
                     )
                     break
         except Exception:
@@ -314,7 +340,15 @@ if not primary_found:
         print(f" - {m['name']}: {m['stateStr']}")
     raise TimeoutError("Replica Set failed to elect a Primary.")
 else:
-    status = init_client.admin.command("replSetGetStatus")
+    with MongoClient(
+        f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}"
+        f"@{MONGODB_NODE_CLIENT_HOSTS[primary_index]}:{MONGODB_NODE_PORTS[primary_index]}/?authSource=admin",
+        **client_options,
+    ) as primary_client:
+        status = primary_client.admin.command("replSetGetStatus")
+    assert len(status["members"]) == MONGODB_TOTAL_NODES
+    assert sum(m["stateStr"] == "PRIMARY" for m in status["members"]) == 1
+    assert sum(m["stateStr"] == "SECONDARY" for m in status["members"]) == 2
     print(f"\nCluster '{MONGODB_REPLICA_SET}' Status Summary:")
     for m in status["members"]:
         icon = "🟢" if m["health"] == 1 else "🔴"

@@ -16,18 +16,31 @@
 # # Setup
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
 # %%
+import re
+
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if not VPN_CLIENT_ALIAS:
+    raise ValueError("VPN_CLIENT_ALIAS must not be empty")
+if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, or hyphens "
+        "and must not start or end with a hyphen"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -64,11 +77,20 @@ CASSANDRA_CLUSTER_NAME = "cassandra-cluster"
 CASSANDRA_TOTAL_NODES = 3
 
 CASSANDRA_NODE_NAMES = [f"cassandra-node-{i+1}" for i in range(CASSANDRA_TOTAL_NODES)]
-CASSANDRA_NODE_HOSTNAMES = [
-    CASSANDRA_NODE_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
-    for i in range(CASSANDRA_TOTAL_NODES)
+def vpn_fqdn(container_name):
+    return f"{container_name}.{VPN_CLIENT_DOMAIN}"
+
+
+CASSANDRA_NODE_INTERNAL_HOSTS = CASSANDRA_NODE_NAMES
+CASSANDRA_NODE_CLIENT_HOSTS = [
+    "127.0.0.1" if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in CASSANDRA_NODE_NAMES
 ]
-CASSANDRA_NODE_IPS = CASSANDRA_NODE_HOSTNAMES
+CASSANDRA_NODE_ADVERTISED_HOSTS = CASSANDRA_NODE_CLIENT_HOSTS
+CASSANDRA_NODE_COMPOSE_HOSTS = [
+    name if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in CASSANDRA_NODE_NAMES
+]
 CASSANDRA_NODE_GOSSIP_PORTS = [7000 + (i + 1) for i in range(CASSANDRA_TOTAL_NODES)]
 CASSANDRA_NODE_RPC_PORTS = [9040 + (i + 1) for i in range(CASSANDRA_TOTAL_NODES)]
 CASSANDRA_NODE_SSL_GOSSIP_PORTS = [7500 + (i + 1) for i in range(CASSANDRA_TOTAL_NODES)]
@@ -305,7 +327,7 @@ cassandra_compose_dict = {
     },
 }
 cassandra_seeds = ",".join(
-    f"{CASSANDRA_NODE_IPS[j]}:{CASSANDRA_NODE_GOSSIP_PORTS[j]}"
+    f"{CASSANDRA_NODE_INTERNAL_HOSTS[j]}:{CASSANDRA_NODE_GOSSIP_PORTS[j]}"
     for j in range(CASSANDRA_TOTAL_NODES)
 )
 
@@ -318,8 +340,8 @@ for i in range(0, CASSANDRA_TOTAL_NODES):
             f"-Dcassandra.native_transport_port={CASSANDRA_NODE_RPC_PORTS[i]}",
             f"-Dcassandra.storage_port={CASSANDRA_NODE_GOSSIP_PORTS[i]}",
             f"-Dcassandra.ssl_storage_port={CASSANDRA_NODE_SSL_GOSSIP_PORTS[i]}",
-            f"-Dcassandra.broadcast_rpc_address={CASSANDRA_NODE_HOSTNAMES[i]}",
-            f"-Dcassandra.broadcast_address={CASSANDRA_NODE_HOSTNAMES[i]}",
+            f"-Dcassandra.broadcast_rpc_address={CASSANDRA_NODE_ADVERTISED_HOSTS[i]}",
+            f"-Dcassandra.broadcast_address={CASSANDRA_NODE_INTERNAL_HOSTS[i]}",
             "-Dcom.sun.management.jmxremote.authenticate=false",
             "-Dcom.sun.management.jmxremote.ssl=false",
             f"-Dcassandra.jmx.remote.port={CASSANDRA_NODE_JMX_PORTS[i]}",
@@ -329,6 +351,7 @@ for i in range(0, CASSANDRA_TOTAL_NODES):
     cassandra_compose_dict["services"][CASSANDRA_NODE_NAMES[i]] = {
         "image": "cassandra:5.0",
         "container_name": CASSANDRA_NODE_NAMES[i],
+        "hostname": CASSANDRA_NODE_COMPOSE_HOSTS[i],
         "environment": [
             "CASSANDRA_USER=cassandra",  # Forces ownership check
             f"MAX_HEAP_SIZE={node_max_heap}",
@@ -342,8 +365,8 @@ for i in range(0, CASSANDRA_TOTAL_NODES):
             f"CASSANDRA_STORAGE_PORT={CASSANDRA_NODE_GOSSIP_PORTS[i]}",
             f"CASSANDRA_SSL_STORAGE_PORT={CASSANDRA_NODE_SSL_GOSSIP_PORTS[i]}",
             f"JVM_OPTS={jvm_opts}",
-            f"CASSANDRA_BROADCAST_RPC_ADDRESS={CASSANDRA_NODE_IPS[i]}",
-            f"CASSANDRA_BROADCAST_ADDRESS={CASSANDRA_NODE_IPS[i]}",
+            f"CASSANDRA_BROADCAST_RPC_ADDRESS={CASSANDRA_NODE_ADVERTISED_HOSTS[i]}",
+            f"CASSANDRA_BROADCAST_ADDRESS={CASSANDRA_NODE_INTERNAL_HOSTS[i]}",
             "LOCAL_JMX=no",  # Setting to 'no' allows remote JMX
         ],
         "volumes": [
@@ -354,7 +377,6 @@ for i in range(0, CASSANDRA_TOTAL_NODES):
             f"{os.path.join(DOCKER_MOUNTDIR, 'jmxremote.password')}:/etc/cassandra/jmxremote.password",
         ],
         "networks": ["cassandra-cluster"],
-        # "hostname": f"{CASSANDRA_NODE_HOSTNAMES[i]}",
         "ports": [
             f"{HOST_BIND_IP}:{CASSANDRA_NODE_RPC_PORTS[i]}:{CASSANDRA_NODE_RPC_PORTS[i]}",
             f"{HOST_BIND_IP}:{CASSANDRA_NODE_GOSSIP_PORTS[i]}:{CASSANDRA_NODE_GOSSIP_PORTS[i]}",

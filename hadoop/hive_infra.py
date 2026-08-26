@@ -16,18 +16,32 @@
 # # Setup
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
 # %%
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+if (
+    not VPN_CLIENT_ALIAS
+    or VPN_CLIENT_ALIAS.startswith("-")
+    or VPN_CLIENT_ALIAS.endswith("-")
+    or not VPN_CLIENT_ALIAS.isascii()
+    or not VPN_CLIENT_ALIAS.replace("-", "").isalnum()
+):
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, and internal hyphens"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -55,7 +69,6 @@ print(f"Working directory: {MODULE_DIR}")
 
 # %%
 HIVE_START_FROM_SCRATCH = START_FROM_SCRATCH
-HIVE_VPN_DOMAIN = "mavasbel.vpn.itam.mx"
 DOCKER_INTERNAL_HOST = "host.docker.internal"
 DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
 HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
@@ -73,6 +86,46 @@ HIVE_DB_HOSTNAME = HIVE_DB_CONTAINER_NAME
 HIVE_SCHEMA_INIT_HOSTNAME = HIVE_SCHEMA_INIT_CONTAINER_NAME
 HIVE_METASTORE_HOSTNAME = HIVE_METASTORE_CONTAINER_NAME
 HIVE_SERVER2_HOSTNAME = HIVE_SERVER2_CONTAINER_NAME
+HIVE_DB_COMPOSE_HOST = (
+    HIVE_DB_HOSTNAME
+    if NETWORK_MODE == "local"
+    else f"{HIVE_DB_CONTAINER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
+HIVE_SCHEMA_INIT_COMPOSE_HOST = (
+    HIVE_SCHEMA_INIT_HOSTNAME
+    if NETWORK_MODE == "local"
+    else f"{HIVE_SCHEMA_INIT_CONTAINER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
+HIVE_METASTORE_COMPOSE_HOST = (
+    HIVE_METASTORE_HOSTNAME
+    if NETWORK_MODE == "local"
+    else f"{HIVE_METASTORE_CONTAINER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
+HIVE_SERVER2_COMPOSE_HOST = (
+    HIVE_SERVER2_HOSTNAME
+    if NETWORK_MODE == "local"
+    else f"{HIVE_SERVER2_CONTAINER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
+HIVE_DB_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{HIVE_DB_CONTAINER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
+HIVE_SCHEMA_INIT_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{HIVE_SCHEMA_INIT_CONTAINER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
+HIVE_METASTORE_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{HIVE_METASTORE_CONTAINER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
+HIVE_SERVER2_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{HIVE_SERVER2_CONTAINER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
 
 HIVE_DB_INTERNAL_PORT = 15432
 HIVE_METASTORE_INTERNAL_PORT = 9083
@@ -463,7 +516,7 @@ hive_compose_dict = {
         HIVE_DB_CONTAINER_NAME: {
             "image": POSTGRES_IMAGE,
             "container_name": HIVE_DB_CONTAINER_NAME,
-            "hostname": HIVE_DB_HOSTNAME,
+            "hostname": HIVE_DB_COMPOSE_HOST,
             "environment": {
                 "POSTGRES_USER": POSTGRES_USER,
                 "POSTGRES_PASSWORD": POSTGRES_PASSWORD,
@@ -492,7 +545,7 @@ hive_compose_dict = {
         HIVE_SCHEMA_INIT_CONTAINER_NAME: {
             "image": APACHE_HIVE_IMAGE,
             "container_name": HIVE_SCHEMA_INIT_CONTAINER_NAME,
-            "hostname": HIVE_SCHEMA_INIT_HOSTNAME,
+            "hostname": HIVE_SCHEMA_INIT_COMPOSE_HOST,
             "depends_on": {HIVE_DB_CONTAINER_NAME: {"condition": "service_healthy"}},
             "environment": {
                 "DB_DRIVER": "postgres",
@@ -511,7 +564,7 @@ hive_compose_dict = {
         HIVE_METASTORE_CONTAINER_NAME: {
             "image": APACHE_HIVE_IMAGE,
             "container_name": HIVE_METASTORE_CONTAINER_NAME,
-            "hostname": HIVE_METASTORE_HOSTNAME,
+            "hostname": HIVE_METASTORE_COMPOSE_HOST,
             "depends_on": {
                 HIVE_SCHEMA_INIT_CONTAINER_NAME: {
                     "condition": "service_completed_successfully"
@@ -554,7 +607,7 @@ hive_compose_dict = {
         HIVE_SERVER2_CONTAINER_NAME: {
             "image": APACHE_HIVE_IMAGE,
             "container_name": HIVE_SERVER2_CONTAINER_NAME,
-            "hostname": HIVE_SERVER2_HOSTNAME,
+            "hostname": HIVE_SERVER2_COMPOSE_HOST,
             "depends_on": {
                 HIVE_METASTORE_CONTAINER_NAME: {"condition": "service_healthy"}
             },

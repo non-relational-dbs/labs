@@ -19,18 +19,31 @@
 # `config_rs` replica set.
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
 # %%
+import re
+
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if not VPN_CLIENT_ALIAS:
+    raise ValueError("VPN_CLIENT_ALIAS must not be empty")
+if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, or hyphens "
+        "and must not start or end with a hyphen"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -61,7 +74,6 @@ MONGODB_START_FROM_SCRATCH = START_FROM_SCRATCH
 DOCKER_INTERNAL_HOST = "host.docker.internal"
 DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
 HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
-BOOTSTRAP_HOST = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 
 # --- CONFIG SERVER CONFIGURATION ---
 MONGODB_CONFIG_SVR_NODES = 3
@@ -79,8 +91,21 @@ MONGODB_CONFIG_SVR_NAMES = [
 MONGODB_CONFIG_SVR_PORTS = [
     MONGODB_STARTING_PORT + (i + 1) for i in range(MONGODB_CONFIG_SVR_NODES)
 ]
-MONGODB_CONFIG_SVR_HOSTNAMES = [
-    name if NETWORK_MODE == "docker" else VPN_HOST_IP
+def vpn_fqdn(container_name):
+    return f"{container_name}.{VPN_CLIENT_DOMAIN}"
+
+
+MONGODB_CONFIG_SVR_INTERNAL_HOSTS = MONGODB_CONFIG_SVR_NAMES
+MONGODB_CONFIG_SVR_CLIENT_HOSTS = [
+    "127.0.0.1" if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in MONGODB_CONFIG_SVR_NAMES
+]
+MONGODB_CONFIG_SVR_ADVERTISED_HOSTS = [
+    name if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in MONGODB_CONFIG_SVR_NAMES
+]
+MONGODB_CONFIG_SVR_COMPOSE_HOSTS = [
+    name if NETWORK_MODE == "local" else vpn_fqdn(name)
     for name in MONGODB_CONFIG_SVR_NAMES
 ]
 
@@ -89,7 +114,7 @@ print(
     *list(
         zip(
             MONGODB_CONFIG_SVR_NAMES,
-            MONGODB_CONFIG_SVR_HOSTNAMES,
+            MONGODB_CONFIG_SVR_CLIENT_HOSTS,
             MONGODB_CONFIG_SVR_PORTS,
         )
     ),
@@ -299,7 +324,7 @@ configsvr_compose_dict = {
 cmd_script = "bash /etc/mongo/config/mongod-bootstrap.sh"
 
 for i, node_name in enumerate(MONGODB_CONFIG_SVR_NAMES):
-    hostname = MONGODB_CONFIG_SVR_HOSTNAMES[i]
+    hostname = MONGODB_CONFIG_SVR_COMPOSE_HOSTS[i]
     port = MONGODB_CONFIG_SVR_PORTS[i]
 
     service_def = {
@@ -371,9 +396,8 @@ display(
 # At this point the containers are healthy. The bootstrap script has created the
 # admin user during Phase 1, so we can connect with credentials.
 #
-# We connect to `localhost` on each published port but list the full Docker-internal
-# hostnames in the `replSetInitiate` member config so inter-container replication
-# works correctly inside the Docker network.
+# Local mode connects through each loopback publication and advertises internal
+# service names. VPN mode connects and advertises each config server's FQDN.
 
 # %%
 import time
@@ -382,10 +406,33 @@ from pymongo.errors import OperationFailure
 
 client_options = {"directConnection": True, "serverSelectionTimeoutMS": 20000}
 
-auth_uri = (
-    f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}"
-    f"@{BOOTSTRAP_HOST}:{MONGODB_CONFIG_SVR_PORTS[0]}/?authSource=admin"
-)
+def config_server_uri(i):
+    return (
+        f"mongodb://{MONGO_INITDB_ROOT_USERNAME}:{MONGO_INITDB_ROOT_PASSWORD}"
+        f"@{MONGODB_CONFIG_SVR_CLIENT_HOSTS[i]}:{MONGODB_CONFIG_SVR_PORTS[i]}"
+        "/?authSource=admin"
+    )
+
+
+readiness_deadline = time.time() + 120
+consecutive_ready_checks = 0
+while time.time() < readiness_deadline and consecutive_ready_checks < 3:
+    all_nodes_ready = True
+    for i in range(MONGODB_CONFIG_SVR_NODES):
+        try:
+            with MongoClient(config_server_uri(i), **client_options) as client:
+                client.admin.command("ping")
+        except Exception:
+            all_nodes_ready = False
+            break
+    consecutive_ready_checks = consecutive_ready_checks + 1 if all_nodes_ready else 0
+    if consecutive_ready_checks < 3:
+        time.sleep(1)
+
+if consecutive_ready_checks < 3:
+    raise TimeoutError("Config servers did not become stably ready within 120s")
+
+auth_uri = config_server_uri(0)
 
 replica_set_config = {
     "_id": MONGO_REPLICA_SET_NAME,
@@ -393,14 +440,15 @@ replica_set_config = {
     "members": [
         {
             "_id": i,
-            "host": f"{MONGODB_CONFIG_SVR_HOSTNAMES[i]}:{MONGODB_CONFIG_SVR_PORTS[i]}",
+            "host": f"{MONGODB_CONFIG_SVR_ADVERTISED_HOSTS[i]}:{MONGODB_CONFIG_SVR_PORTS[i]}",
         }
         for i in range(MONGODB_CONFIG_SVR_NODES)
     ],
 }
 
 print(
-    f"🚀 Initiating replica set '{MONGO_REPLICA_SET_NAME}' on localhost:{MONGODB_CONFIG_SVR_PORTS[0]} ..."
+    f"🚀 Initiating replica set '{MONGO_REPLICA_SET_NAME}' on "
+    f"{MONGODB_CONFIG_SVR_CLIENT_HOSTS[0]}:{MONGODB_CONFIG_SVR_PORTS[0]} ..."
 )
 for m in replica_set_config["members"]:
     print(f"   _id={m['_id']}  host={m['host']}")
@@ -423,22 +471,42 @@ import time
 PRIMARY_ELECTION_TIMEOUT = 30
 
 primary = None
+primary_index = None
 start_time = time.time()
-with MongoClient(auth_uri, **client_options) as client:
-    while primary is None and time.time() < start_time + PRIMARY_ELECTION_TIMEOUT:
-        status = client.admin.command("replSetGetStatus")
-        primary = next(
-            (m for m in status.get("members", []) if m["stateStr"] == "PRIMARY"),
-            None,
-        )
-        if primary is None:
-            print("⏳ No PRIMARY yet, retrying in 1 s...")
-            time.sleep(1)
-        else:
-            print(f"Replica Set '{MONGO_REPLICA_SET_NAME}' Status Summary:")
-            for m in status["members"]:
-                icon = "🟢" if m["health"] == 1 else "🔴"
-                print(f"{icon} {m['name']:<35} | {m['stateStr']:<10}")
+while primary is None and time.time() < start_time + PRIMARY_ELECTION_TIMEOUT:
+    for i in range(MONGODB_CONFIG_SVR_NODES):
+        try:
+            with MongoClient(config_server_uri(i), **client_options) as client:
+                hello = client.admin.command("hello")
+                if hello.get("isWritablePrimary") or hello.get("ismaster"):
+                    primary_index = i
+                    status = client.admin.command("replSetGetStatus")
+                    primary = next(
+                        (
+                            member
+                            for member in status.get("members", [])
+                            if member["stateStr"] == "PRIMARY"
+                        ),
+                        None,
+                    )
+                    break
+        except Exception:
+            continue
+    if primary is None:
+        print("⏳ No PRIMARY yet, retrying in 1 s...")
+        time.sleep(1)
 
 if primary is None:
     raise TimeoutError(f"No PRIMARY elected within {PRIMARY_ELECTION_TIMEOUT}s.")
+
+assert len(status["members"]) == MONGODB_CONFIG_SVR_NODES
+assert sum(m["stateStr"] == "PRIMARY" for m in status["members"]) == 1
+assert sum(m["stateStr"] == "SECONDARY" for m in status["members"]) == 2
+print(
+    f"Primary reached at {MONGODB_CONFIG_SVR_CLIENT_HOSTS[primary_index]}:"
+    f"{MONGODB_CONFIG_SVR_PORTS[primary_index]}"
+)
+print(f"Replica Set '{MONGO_REPLICA_SET_NAME}' Status Summary:")
+for m in status["members"]:
+    icon = "🟢" if m["health"] == 1 else "🔴"
+    print(f"{icon} {m['name']:<35} | {m['stateStr']:<10}")

@@ -16,18 +16,32 @@
 # # Setup
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
 # %%
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+if (
+    not VPN_CLIENT_ALIAS
+    or VPN_CLIENT_ALIAS.startswith("-")
+    or VPN_CLIENT_ALIAS.endswith("-")
+    or not VPN_CLIENT_ALIAS.isascii()
+    or not VPN_CLIENT_ALIAS.replace("-", "").isalnum()
+):
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, and internal hyphens"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -56,25 +70,41 @@ print(f"Working directory: {MODULE_DIR}")
 # %%
 SPARK_START_FROM_SCRATCH = START_FROM_SCRATCH
 DOCKER_INTERNAL_HOST = "host.docker.internal"
+SPARK_LOCAL_HDFS_HOST = "namenode.lvh.me"
 DOCKER_DNS = [VPN_DNS_IP] if NETWORK_MODE == "vpn" else []
 HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
-SPARK_VPN_DOMAIN = "mavasbel.vpn.itam.mx"
 
 SPARK_DOCKER_BASE = "spark:3.5.7-scala2.12-java17-python3-ubuntu"
 SPARK_JUPYTER_LAB_DOCKER_TAG = "spark-jupyter:3.5.7-scala2.12-java17-python3-ubuntu"
 SPARK_JOB_VENV_DOCKER_TAG = "spark-job-venv:3.5.7-scala2.12-java17-python3-ubuntu"
 SPARK_JOB_VENV_BUILD_DIR = "/opt/spark/venv-build"
+SPARK_EXECUTOR_ENV_DIR = "/opt/spark/executor-env"
 
 SPARK_MASTER_NAME = "spark-master"
 SPARK_MASTER_HOSTNAME = "spark-master-internal"
+SPARK_MASTER_COMPOSE_HOST = (
+    SPARK_MASTER_HOSTNAME
+    if NETWORK_MODE == "local"
+    else f"{SPARK_MASTER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
+SPARK_MASTER_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{SPARK_MASTER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
 SPARK_MASTER_WUBUI_PORT = 6080
 SPARK_MASTER_PORT = 6077
 
 SPARK_TOTAL_WORKERS = 3
 SPARK_WORKER_NAMES = [f"spark-worker-{i+1}" for i in range(SPARK_TOTAL_WORKERS)]
 SPARK_WORKER_HOSTNAMES = SPARK_WORKER_NAMES
+SPARK_WORKER_COMPOSE_HOSTS = [
+    name if NETWORK_MODE == "local" else f"{name}.{VPN_CLIENT_DOMAIN}"
+    for name in SPARK_WORKER_NAMES
+]
 SPARK_WORKER_IPS = [
-    VPN_HOST_IP if NETWORK_MODE == "vpn" else name for name in SPARK_WORKER_NAMES
+    f"{name}.{VPN_CLIENT_DOMAIN}" if NETWORK_MODE == "vpn" else "127.0.0.1"
+    for name in SPARK_WORKER_NAMES
 ]
 SPARK_WORKER_WEBUI_PORTS = [6080 + (i + 1) for i in range(SPARK_TOTAL_WORKERS)]
 
@@ -82,6 +112,16 @@ SPARK_WORKDIR = "/opt/spark/work-dir"
 
 JUPYTER_LAB_NAME = "spark-jupyter"
 JUPYTER_LAB_HOSTNAME = JUPYTER_LAB_NAME
+JUPYTER_LAB_COMPOSE_HOST = (
+    JUPYTER_LAB_HOSTNAME
+    if NETWORK_MODE == "local"
+    else f"{JUPYTER_LAB_NAME}.{VPN_CLIENT_DOMAIN}"
+)
+JUPYTER_LAB_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{JUPYTER_LAB_NAME}.{VPN_CLIENT_DOMAIN}"
+)
 JUPYTER_LAB_PORT = 6888
 JUPYTER_LAB_MONITOR_PORT = 4040
 JUPYTER_LAB_TOKEN = ""
@@ -222,7 +262,7 @@ path.mkdir(parents=True, exist_ok=True)
 
 # !docker build -t {SPARK_JOB_VENV_DOCKER_TAG} -f dockerfile.spark-job-venv .
 # !docker create --name spark-job-venv {SPARK_JOB_VENV_DOCKER_TAG}
-# !docker cp spark-job-venv:{SPARK_JOB_VENV_BUILD_DIR}/spark_job_env.tar.gz "{DOCKER_MOUNTDIR}/{JUPYTER_LAB_NAME}/spark_job_env.tar.gz"
+# !docker cp spark-job-venv:{SPARK_JOB_VENV_BUILD_DIR}/spark_job_env.tar.gz "{DOCKER_MOUNTDIR}/{SPARK_SHARED_WORKSPACE}/spark_job_env.tar.gz"
 # !docker rm spark-job-venv
 
 # %% [markdown]
@@ -235,9 +275,7 @@ from IPython.display import Markdown, display
 
 SPARK_VSCODE_SERVER_DIR = os.path.join(LOCALHOST_WORKDIR, "vscode_server")
 SPARK_MOUNT_JARS = [
-    f"{os.path.join(LOCALHOST_WORKDIR, 'jars', file)}:/opt/spark/jars/{file}"
-    for file in os.listdir(os.path.join(LOCALHOST_WORKDIR, "jars"))
-    if file.endswith("jar")
+    f"{os.path.join(LOCALHOST_WORKDIR, 'jars')}:/opt/spark/course-jars:ro"
 ]
 
 spark_compose_dict = {
@@ -266,7 +304,7 @@ spark_compose_dict = {
             "networks": {
                 "spark-cluster": {"aliases": [SPARK_MASTER_HOSTNAME]},
             },
-            "hostname": SPARK_MASTER_HOSTNAME,
+            "hostname": SPARK_MASTER_COMPOSE_HOST,
             "ports": [
                 f"{HOST_BIND_IP}:{SPARK_MASTER_WUBUI_PORT}:{SPARK_MASTER_WUBUI_PORT}",
                 f"{HOST_BIND_IP}:{SPARK_MASTER_PORT}:{SPARK_MASTER_PORT}",
@@ -324,7 +362,7 @@ spark_compose_dict = {
             ]
             + SPARK_MOUNT_JARS,
             "networks": ["spark-cluster"],
-            "hostname": JUPYTER_LAB_HOSTNAME,
+            "hostname": JUPYTER_LAB_COMPOSE_HOST,
             "ports": [
                 f"{HOST_BIND_IP}:{JUPYTER_LAB_PORT}:{JUPYTER_LAB_PORT}",
                 f"{HOST_BIND_IP}:{JUPYTER_LAB_MONITOR_PORT}:{JUPYTER_LAB_MONITOR_PORT}",
@@ -356,7 +394,7 @@ for i in range(SPARK_TOTAL_WORKERS):
         "image": f"apache/{SPARK_DOCKER_BASE}",
         "container_name": SPARK_WORKER_NAMES[i],
         "user": "root",
-        "command": f'bash -c "/opt/spark/bin/spark-class org.apache.spark.deploy.$$SPARK_MODE.$${{SPARK_MODE^}} $$SPARK_MASTER_URL --host {SPARK_WORKER_HOSTNAMES[i]} --webui-port $$SPARK_WORKER_WEBUI_PORT"',
+        "command": f'bash -c "rm -rf {SPARK_EXECUTOR_ENV_DIR} && mkdir -p {SPARK_EXECUTOR_ENV_DIR} && tar -xzf {SPARK_SHARED_WORKSPACE_DIR}/spark_job_env.tar.gz -C {SPARK_EXECUTOR_ENV_DIR} && /opt/spark/bin/spark-class org.apache.spark.deploy.$$SPARK_MODE.$${{SPARK_MODE^}} $$SPARK_MASTER_URL --host {SPARK_WORKER_HOSTNAMES[i]} --webui-port $$SPARK_WORKER_WEBUI_PORT"',
         "environment": [
             "PYSPARK_PYTHON=python3",
             "SPARK_MODE=worker",
@@ -372,7 +410,7 @@ for i in range(SPARK_TOTAL_WORKERS):
         ]
         + SPARK_MOUNT_JARS,
         "networks": ["spark-cluster"],
-        "hostname": SPARK_WORKER_HOSTNAMES[i],
+        "hostname": SPARK_WORKER_COMPOSE_HOSTS[i],
         "ports": [
             f"{HOST_BIND_IP}:{SPARK_WORKER_WEBUI_PORTS[i]}:{SPARK_WORKER_WEBUI_PORTS[i]}"
         ],

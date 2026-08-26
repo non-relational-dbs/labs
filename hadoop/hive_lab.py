@@ -17,17 +17,31 @@
 #
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 
 # %%
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+if (
+    not VPN_CLIENT_ALIAS
+    or VPN_CLIENT_ALIAS.startswith("-")
+    or VPN_CLIENT_ALIAS.endswith("-")
+    or not VPN_CLIENT_ALIAS.isascii()
+    or not VPN_CLIENT_ALIAS.replace("-", "").isalnum()
+):
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, and internal hyphens"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -54,7 +68,6 @@ os.chdir(MODULE_DIR)
 print(f"Working directory: {MODULE_DIR}")
 
 # %%
-HIVE_VPN_DOMAIN = "mavasbel.vpn.itam.mx"
 DOCKER_INTERNAL_HOST = "host.docker.internal"
 
 POSTGRES_USER = "hive"
@@ -70,8 +83,25 @@ HIVE_DB_HOSTNAME = HIVE_DB_CONTAINER_NAME
 HIVE_SCHEMA_INIT_HOSTNAME = HIVE_SCHEMA_INIT_CONTAINER_NAME
 HIVE_METASTORE_HOSTNAME = HIVE_METASTORE_CONTAINER_NAME
 HIVE_SERVER2_HOSTNAME = HIVE_SERVER2_CONTAINER_NAME
+HIVE_DB_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{HIVE_DB_CONTAINER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
+HIVE_SCHEMA_INIT_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{HIVE_SCHEMA_INIT_CONTAINER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
+HIVE_METASTORE_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{HIVE_METASTORE_CONTAINER_NAME}.{VPN_CLIENT_DOMAIN}"
+)
 HIVE_SERVER2_CLIENT_HOST = (
-    HIVE_SERVER2_CONTAINER_NAME if NETWORK_MODE == "docker" else VPN_HOST_IP
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{HIVE_SERVER2_CONTAINER_NAME}.{VPN_CLIENT_DOMAIN}"
 )
 
 HIVE_DB_INTERNAL_PORT = 15432

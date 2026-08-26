@@ -16,17 +16,31 @@
 # # Setup
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 
 # %%
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+if (
+    not VPN_CLIENT_ALIAS
+    or VPN_CLIENT_ALIAS.startswith("-")
+    or VPN_CLIENT_ALIAS.endswith("-")
+    or not VPN_CLIENT_ALIAS.isascii()
+    or not VPN_CLIENT_ALIAS.replace("-", "").isalnum()
+):
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, and internal hyphens"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -54,35 +68,44 @@ print(f"Working directory: {MODULE_DIR}")
 
 # %%
 DOCKER_INTERNAL_HOST = "host.docker.internal"
-SPARK_VPN_DOMAIN = "mavasbel.vpn.itam.mx"
+SPARK_LOCAL_HDFS_HOST = "namenode.lvh.me"
 
 SPARK_DOCKER_BASE = "spark:3.5.7-scala2.12-java17-python3-ubuntu"
 SPARK_JUPYTER_LAB_DOCKER_TAG = "spark-jupyter:3.5.7-scala2.12-java17-python3-ubuntu"
 SPARK_JOB_VENV_DOCKER_TAG = "spark-job-venv:3.5.7-scala2.12-java17-python3-ubuntu"
 SPARK_JOB_VENV_BUILD_DIR = "/opt/spark/venv-build"
+SPARK_EXECUTOR_ENV_DIR = "/opt/spark/executor-env"
 
 SPARK_MASTER_NAME = "spark-master"
-SPARK_MASTER_HOSTNAME = (
-    SPARK_MASTER_NAME if NETWORK_MODE == "docker" else VPN_HOST_IP
+SPARK_MASTER_HOSTNAME = SPARK_MASTER_NAME
+SPARK_MASTER_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{SPARK_MASTER_NAME}.{VPN_CLIENT_DOMAIN}"
 )
 SPARK_MASTER_WUBUI_PORT = 6080
 SPARK_MASTER_PORT = 6077
 
 SPARK_TOTAL_WORKERS = 3
 SPARK_WORKER_NAMES = [f"spark-worker-{i+1}" for i in range(SPARK_TOTAL_WORKERS)]
-SPARK_WORKER_HOSTNAMES = [
-    SPARK_WORKER_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
-    for i in range(SPARK_TOTAL_WORKERS)
+SPARK_WORKER_HOSTNAMES = SPARK_WORKER_NAMES
+SPARK_WORKER_IPS = [
+    f"{name}.{VPN_CLIENT_DOMAIN}" if NETWORK_MODE == "vpn" else "127.0.0.1"
+    for name in SPARK_WORKER_NAMES
 ]
-SPARK_WORKER_IPS = SPARK_WORKER_HOSTNAMES
 SPARK_WORKER_WEBUI_PORTS = [6080 + (i + 1) for i in range(SPARK_TOTAL_WORKERS)]
 
 SPARK_WORKDIR = "/opt/spark/work-dir"
 
 JUPYTER_LAB_NAME = "spark-jupyter"
-JUPYTER_LAB_HOSTNAME = (
-    "labs-spark-runner" if NETWORK_MODE == "docker" else VPN_HOST_IP
+JUPYTER_LAB_HOSTNAME = JUPYTER_LAB_NAME
+JUPYTER_LAB_CLIENT_HOST = (
+    "127.0.0.1"
+    if NETWORK_MODE == "local"
+    else f"{JUPYTER_LAB_NAME}.{VPN_CLIENT_DOMAIN}"
 )
+# Executors run in Docker while this notebook driver runs on the host.
+SPARK_DRIVER_HOST = DOCKER_INTERNAL_HOST
 JUPYTER_LAB_PORT = 6888
 JUPYTER_LAB_MONITOR_PORT = 4040
 JUPYTER_LAB_TOKEN = ""
@@ -91,16 +114,22 @@ SPARK_SHARED_WORKSPACE = "shared-workspace"
 SPARK_SHARED_WORKSPACE_DIR = f"/opt/spark/{SPARK_SHARED_WORKSPACE}"
 
 # %%
-HADOOP_NAMENODE_HOSTNAME = "namenode" if NETWORK_MODE == "docker" else VPN_HOST_IP
-HADOOP_NAMENODE_IP = HADOOP_NAMENODE_HOSTNAME
+HADOOP_NAMENODE_HOSTNAME = "namenode"
 HADOOP_NAMENODE_PORT = 8020
+SPARK_HDFS_HOST = (
+    SPARK_LOCAL_HDFS_HOST
+    if NETWORK_MODE == "local"
+    else f"{HADOOP_NAMENODE_HOSTNAME}.{VPN_CLIENT_DOMAIN}"
+)
+SPARK_HDFS_URI = f"hdfs://{SPARK_HDFS_HOST}:{HADOOP_NAMENODE_PORT}"
 
 # %%
 import os
 from pathlib import Path
 
-SPARK_DATADIR = Path(os.path.join(os.path.abspath(Path.cwd()), "data"))
-SPARK_DATADIR.mkdir(parents=True, exist_ok=True)
+SPARK_HOST_SHARED_WORKSPACE = MODULE_DIR / "mount" / SPARK_SHARED_WORKSPACE
+SPARK_HOST_SHARED_WORKSPACE.mkdir(parents=True, exist_ok=True)
+SPARK_DATADIR = f"{SPARK_HDFS_URI}/spark-lab/data"
 
 # %% [markdown]
 # ##### Cleaning Spark context
@@ -123,43 +152,67 @@ else:
 
 # %%
 import sys
+import hashlib
 from pyspark.sql import SparkSession
 from datetime import datetime
-from delta import configure_spark_with_delta_pip
 
 os.environ["HADOOP_USER_NAME"] = "hadoop"
+java_security_option = "-Djava.security.manager=allow"
+java_tool_options = os.environ.get("JAVA_TOOL_OPTIONS", "")
+if java_security_option not in java_tool_options.split():
+    os.environ["JAVA_TOOL_OPTIONS"] = f"{java_tool_options} {java_security_option}".strip()
 
 SPARK_DRIVER_PORT = 4050
 SPARK_BLOCK_MANAGER_PORT = 4051
-SPARK_JOB_ARCHIVE = MODULE_DIR / "mount" / JUPYTER_LAB_NAME / "spark_job_env.tar.gz"
-SPARK_JOB_ARCHIVE_URI = SPARK_JOB_ARCHIVE.resolve().as_uri()
-SPARK_ICEBERG_JAR_URI = (
-    MODULE_DIR / "jars" / "iceberg-spark-runtime-3.5_2.12-1.6.1.jar"
-).resolve().as_uri()
-SPARK_ICEBERG_WAREHOUSE = (
-    f"file://{SPARK_SHARED_WORKSPACE_DIR}/iceberg-warehouse"
-    if NETWORK_MODE == "docker"
-    else f"hdfs://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_PORT}/iceberg-warehouse"
+SPARK_JOB_ARCHIVE = SPARK_HOST_SHARED_WORKSPACE / "spark_job_env.tar.gz"
+SPARK_JARS_DIR = MODULE_DIR / "jars"
+SPARK_JARS = {
+    "iceberg-spark-runtime-3.5_2.12-1.6.1.jar": "87e7184f31ef0caac415bbdfcf1bc4943346a58b98d747dc83434f7139e12acb",
+    "delta-spark_2.12-3.2.0.jar": "51d473537d1bc10c81f48b03d8e2a6b604e1b421a70835ec12e917a4245a31d5",
+    "delta-storage-3.2.0.jar": "58aab63eba7736fea9e03eafb0dde6704a34a70f570c1a69ab8e4012c25a95d4",
+    "antlr4-runtime-4.9.3.jar": "131a6594969bc4f321d652ea2a33bc0e378ca312685ef87791b2c60b29d01ea5",
+}
+for jar_name, expected_sha256 in SPARK_JARS.items():
+    jar_path = SPARK_JARS_DIR / jar_name
+    if not jar_path.is_file():
+        raise FileNotFoundError(f"Required versioned Spark JAR is missing: {jar_path}")
+    actual_sha256 = hashlib.sha256(jar_path.read_bytes()).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise ValueError(
+            f"Spark JAR checksum mismatch for {jar_path}: "
+            f"expected {expected_sha256}, got {actual_sha256}"
+        )
+
+SPARK_DRIVER_CLASSPATH = os.pathsep.join(
+    str(SPARK_JARS_DIR / jar_name) for jar_name in SPARK_JARS
 )
+SPARK_EXECUTOR_CLASSPATH = ":".join(
+    f"/opt/spark/course-jars/{jar_name}" for jar_name in SPARK_JARS
+)
+SPARK_ICEBERG_WAREHOUSE = f"{SPARK_HDFS_URI}/spark-lab/iceberg-warehouse"
 assert SPARK_JOB_ARCHIVE.is_file(), SPARK_JOB_ARCHIVE
 builder = (
-    SparkSession.builder.master(f"spark://{SPARK_MASTER_HOSTNAME}:{SPARK_MASTER_PORT}")
+    SparkSession.builder.master(f"spark://{SPARK_MASTER_CLIENT_HOST}:{SPARK_MASTER_PORT}")
     .appName(f"SparkLab_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S.%f')}")
-    .config("spark.archives", f"{SPARK_JOB_ARCHIVE_URI}#environment")
-    .config("spark.driver.host", f"{JUPYTER_LAB_HOSTNAME}")
+    .config("spark.driver.host", SPARK_DRIVER_HOST)
     .config("spark.driver.bindAddress", "0.0.0.0")
     .config("spark.driver.port", SPARK_DRIVER_PORT)
     .config("spark.blockManager.port", SPARK_BLOCK_MANAGER_PORT)
     .config("spark.driver.memory", "512m")
+    .config("spark.driver.maxResultSize", "256m")
+    .config("spark.task.maxDirectResultSize", "64m")
+    .config("spark.sql.session.timeZone", "UTC")
+    .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
+    .config("spark.driver.extraClassPath", SPARK_DRIVER_CLASSPATH)
+    .config("spark.executor.extraClassPath", SPARK_EXECUTOR_CLASSPATH)
     .config(
-        "spark.jars",
-        SPARK_ICEBERG_JAR_URI,
+        "spark.executorEnv.PYSPARK_PYTHON",
+        f"{SPARK_EXECUTOR_ENV_DIR}/bin/python3",
     )
-    .config("spark.executorEnv.PYSPARK_PYTHON", "./environment/bin/python3")
     .config("spark.executor.memory", "1G")
     .config(
         "spark.executorEnv.PYTHONPATH",
-        f"./environment/lib/python{'.'.join(str(n) for n in sys.version_info[:2])}/site-packages",
+        f"{SPARK_EXECUTOR_ENV_DIR}/lib/python{'.'.join(str(n) for n in sys.version_info[:2])}/site-packages",
     )
     .config(
         "spark.sql.catalog.local.warehouse",
@@ -167,7 +220,10 @@ builder = (
     )
     .config("spark.sql.catalog.local", "org.apache.iceberg.spark.SparkCatalog")
     .config("spark.sql.catalog.local.type", "hadoop")
-    .config("spark.sql.warehouse.dir", os.path.abspath("spark-warehouse"))
+    .config(
+        "spark.sql.warehouse.dir",
+        f"{SPARK_HDFS_URI}/spark-lab/spark-warehouse",
+    )
     .config(
         "spark.sql.extensions",
         "io.delta.sql.DeltaSparkSessionExtension,"
@@ -179,7 +235,7 @@ builder = (
     )
     .enableHiveSupport()
 )
-spark = configure_spark_with_delta_pip(builder).getOrCreate()
+spark = builder.getOrCreate()
 
 print(f"Spark Version: {spark.version}")
 print(f"Scala Version: {spark._jvm.scala.util.Properties.versionString()}")
@@ -285,8 +341,8 @@ df: DataFrame = (
 # df.coalesce(1).write.mode("overwrite").parquet(f"{SPARK_DATADIR}/faker_vectorized.parquet")
 # pdf = df.toPandas()
 # pdf.to_parquet(f"{SPARK_DATADIR}/faker_vectorized.parquet", index=False)
-df.write.mode("overwrite").parquet(f"hdfs://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_PORT}/tmp/faker_vectorized.parquet")
-print(f"✅ Created hdfs://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_PORT}/tmp/faker_vectorized.parquet")
+df.write.mode("overwrite").parquet(f"{SPARK_HDFS_URI}/tmp/faker_vectorized.parquet")
+print(f"✅ Created {SPARK_HDFS_URI}/tmp/faker_vectorized.parquet")
 
 
 partition_stats = (
@@ -307,18 +363,24 @@ from pyspark.sql import functions as F
 # df_verify = spark.read.parquet(f"{SPARK_DATADIR}/faker_vectorized.parquet").repartition(partitions)
 # pdf_verify = pd.read_parquet(f"{SPARK_DATADIR}/faker_vectorized.parquet")
 # df_verify = spark.createDataFrame(pdf_verify).repartition(partitions)
-df_verify = spark.read.parquet(f"hdfs://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_PORT}/tmp/faker_vectorized.parquet").repartition(partitions)
+df_verify = spark.read.parquet(f"{SPARK_HDFS_URI}/tmp/faker_vectorized.parquet").repartition(partitions)
 verified_rows = df_verify.count()
 assert verified_rows == total_rows, verified_rows
 print(f"Generated rows: {verified_rows}")
 
 print("\nFirst 10 by timestamp desc:")
 # df_verify.sort(F.col("timestamp").desc()).show(10)
-display(df_verify.sort(F.col("timestamp").desc()).toPandas())
+display(df_verify.sort(F.col("timestamp").desc()).limit(10).toPandas())
 
 print("\nFirst 10 by count(first_name) desc:")
 # df_verify.groupBy("first_name").count().sort(F.col("count").desc()).show(10)
-display(df_verify.groupBy("first_name").count().sort(F.col("count").desc()).toPandas())
+display(
+    df_verify.groupBy("first_name")
+    .count()
+    .sort(F.col("count").desc())
+    .limit(10)
+    .toPandas()
+)
 
 # %%
 from IPython.display import Markdown, display
@@ -339,7 +401,7 @@ display(df_sparkql.toPandas())
 # # Delta Lake and Iceberg validation
 
 # %%
-delta_path = f"hdfs://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_PORT}/tmp/delta-products"
+delta_path = f"{SPARK_HDFS_URI}/tmp/delta-products"
 df_verify.limit(100).write.format("delta").mode("overwrite").save(delta_path)
 assert spark.read.format("delta").load(delta_path).count() == 100
 
@@ -359,7 +421,7 @@ df_sparkql = spark.sql(f"""
         first_name, 
         SUM(amount) as total_amount,
         COUNT(*) as first_name_count
-    FROM parquet.`hdfs://{HADOOP_NAMENODE_HOSTNAME}:{HADOOP_NAMENODE_PORT}/tmp/faker_vectorized.parquet`
+    FROM parquet.`{SPARK_HDFS_URI}/tmp/faker_vectorized.parquet`
     GROUP BY first_name
     ORDER BY first_name_count DESC
 """)

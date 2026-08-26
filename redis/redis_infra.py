@@ -16,18 +16,31 @@
 # # Setup
 
 # %% tags=["parameters"]
-# Docker is the portable default; VPN mode publishes services on this host.
-NETWORK_MODE = "docker"
+# Local mode is the portable default; VPN mode publishes services on this host.
+NETWORK_MODE = "local"
 VPN_HOST_IP = "10.15.20.100"
 VPN_DNS_IP = "10.15.20.1"
+VPN_DOMAIN = "vpn.itam.mx"
+VPN_CLIENT_ALIAS = "mavasbel"
 START_FROM_SCRATCH = False
 
 # %%
+import re
+
 NETWORK_MODE = NETWORK_MODE.strip().lower()
-if NETWORK_MODE not in {"docker", "vpn"}:
-    raise ValueError("NETWORK_MODE must be 'docker' or 'vpn'")
+if NETWORK_MODE not in {"local", "vpn"}:
+    raise ValueError("NETWORK_MODE must be 'local' or 'vpn'")
 if NETWORK_MODE == "vpn" and not VPN_HOST_IP.startswith("10.15.20."):
     raise ValueError("VPN_HOST_IP must be in the 10.15.20.* subnet")
+VPN_CLIENT_ALIAS = VPN_CLIENT_ALIAS.strip().lower()
+if not VPN_CLIENT_ALIAS:
+    raise ValueError("VPN_CLIENT_ALIAS must not be empty")
+if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", VPN_CLIENT_ALIAS) is None:
+    raise ValueError(
+        "VPN_CLIENT_ALIAS must contain only lowercase letters, digits, or hyphens "
+        "and must not start or end with a hyphen"
+    )
+VPN_CLIENT_DOMAIN = f"{VPN_CLIENT_ALIAS}.{VPN_DOMAIN}"
 
 # %%
 # Resolve module assets from the labs-setup root.
@@ -61,18 +74,21 @@ HOST_BIND_IP = VPN_HOST_IP if NETWORK_MODE == "vpn" else "127.0.0.1"
 
 REDIS_TOTAL_NODES = 6
 REDIS_NODE_NAMES = [f"redis-node-{i+1}" for i in range(REDIS_TOTAL_NODES)]
-REDIS_DOCKER_NODE_IPS = [
+REDIS_NODE_INTERNAL_IPS = [
     f"172.28.0.{i + 11}" for i in range(REDIS_TOTAL_NODES)
 ]
-REDIS_NODE_HOSTNAMES = [
-    REDIS_NODE_NAMES[i] if NETWORK_MODE == "docker" else VPN_HOST_IP
-    for i in range(REDIS_TOTAL_NODES)
+def vpn_fqdn(container_name):
+    return f"{container_name}.{VPN_CLIENT_DOMAIN}"
+
+
+REDIS_NODE_CLIENT_HOSTS = [
+    "127.0.0.1" if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in REDIS_NODE_NAMES
 ]
-REDIS_NODE_IPS = (
-    REDIS_DOCKER_NODE_IPS
-    if NETWORK_MODE == "docker"
-    else [VPN_HOST_IP] * REDIS_TOTAL_NODES
-)
+REDIS_NODE_COMPOSE_HOSTS = [
+    name if NETWORK_MODE == "local" else vpn_fqdn(name)
+    for name in REDIS_NODE_NAMES
+]
 REDIS_NODE_PORTS = [6380 + i + 1 for i in range(REDIS_TOTAL_NODES)]
 REDIS_NODE_BUS_PORTS = [16380 + i + 1 for i in range(REDIS_TOTAL_NODES)]
 
@@ -150,9 +166,24 @@ redis_compose_dict = {
 }
 
 for i in range(REDIS_TOTAL_NODES):
+    cluster_announcement = [
+        "--cluster-announce-ip",
+        REDIS_NODE_INTERNAL_IPS[i],
+    ]
+    if NETWORK_MODE == "vpn":
+        cluster_announcement.extend(
+            [
+                "--cluster-announce-hostname",
+                vpn_fqdn(REDIS_NODE_NAMES[i]),
+                "--cluster-preferred-endpoint-type",
+                "hostname",
+            ]
+        )
+
     redis_compose_dict["services"][REDIS_NODE_NAMES[i]] = {
         "image": "redis:8.4.0-bookworm",
         "container_name": REDIS_NODE_NAMES[i],
+        "hostname": REDIS_NODE_COMPOSE_HOSTS[i],
         "command": [
             "redis-server",
             *["--cluster-enabled", "yes"],
@@ -174,7 +205,7 @@ for i in range(REDIS_TOTAL_NODES):
             *["--port", f"{REDIS_NODE_PORTS[i]}"],
             *["--bind", "0.0.0.0"],
             *["--protected-mode", "no"],
-            *["--cluster-announce-ip", REDIS_NODE_IPS[i]],
+            *cluster_announcement,
             *["--cluster-announce-port", f"{REDIS_NODE_PORTS[i]}"],
             *["--cluster-announce-bus-port", f"{REDIS_NODE_BUS_PORTS[i]}"],
         ],
@@ -182,9 +213,8 @@ for i in range(REDIS_TOTAL_NODES):
             f"{os.path.join(DOCKER_MOUNTDIR, REDIS_NODE_NAMES[i])}:{REDIS_WORKDIR}"
         ],
         "networks": {
-            "redis-cluster": {"ipv4_address": REDIS_DOCKER_NODE_IPS[i]}
+            "redis-cluster": {"ipv4_address": REDIS_NODE_INTERNAL_IPS[i]}
         },
-        # f"hostname": f"{REDIS_NODE_HOSTNAMES[i]}",
         "ports": [
             f"{HOST_BIND_IP}:{REDIS_NODE_PORTS[i]}:{REDIS_NODE_PORTS[i]}",
             f"{HOST_BIND_IP}:{REDIS_NODE_BUS_PORTS[i]}:{REDIS_NODE_BUS_PORTS[i]}",
@@ -233,7 +263,8 @@ display(Markdown(f"```yaml\n{redis_compose_yaml_contents}\n```"))
 
 # %%
 nodes_ports = " ".join(
-    f"{REDIS_NODE_IPS[i]}:{REDIS_NODE_PORTS[i]}" for i in range(REDIS_TOTAL_NODES)
+    f"{REDIS_NODE_INTERNAL_IPS[i]}:{REDIS_NODE_PORTS[i]}"
+    for i in range(REDIS_TOTAL_NODES)
 )
 
 cluster_bootstrap = subprocess.run(
